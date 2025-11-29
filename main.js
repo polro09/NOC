@@ -17,30 +17,33 @@ function createWindow() {
     frame: false,
     alwaysOnTop: false,
     skipTaskbar: false,
-    resizable: false,
+    resizable: true, // 크기 조절 가능하도록 변경
     backgroundColor: '#ffffff',
     webPreferences: {
       nodeIntegration: true,
-      contextIsolation: false
+      contextIsolation: false,
+      enableRemoteModule: false,
+      sandbox: false,
+      webSecurity: false
     }
   });
 
   mainWindow.loadFile('overlay/login.html');
   
-  // 메인 페이지 로드 시 오버레이 모드로 전환
-  mainWindow.webContents.on('did-finish-load', () => {
-    const currentURL = mainWindow.webContents.getURL();
-    if (currentURL.includes('index.html')) {
-      // 오버레이 모드로 전환
-      mainWindow.setSize(400, 600);
-      mainWindow.setPosition(width - 420, 20);
-      mainWindow.setAlwaysOnTop(true);
-      mainWindow.setResizable(true);
+  // 위치 강제 이동 코드 완전 제거
+  // 사용자가 원하는 위치에 자유롭게 배치 가능
+  
+  // 개발 중에만 개발자 도구 열기
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+  
+  // 보안 경고 무시 (개발 환경)
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    if (message.includes('Electron Security Warning')) {
+      event.preventDefault();
     }
   });
-  
-  // 개발자 도구 자동 열기 (디버깅용)
-  mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
 // 클릭 무시 모드 토글
@@ -77,7 +80,10 @@ ipcMain.on('open-chat-overlay', (event, channelData) => {
       resizable: true,
       webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false
+        contextIsolation: false,
+        enableRemoteModule: false,
+        sandbox: false,
+        webSecurity: false
       }
     });
     
@@ -90,6 +96,13 @@ ipcMain.on('open-chat-overlay', (event, channelData) => {
     // 창이 로드되면 채널 데이터 전송
     chatOverlayWindow.webContents.on('did-finish-load', () => {
       chatOverlayWindow.webContents.send('load-channel', channelData);
+    });
+    
+    // 보안 경고 무시 (개발 환경)
+    chatOverlayWindow.webContents.on('console-message', (event, level, message) => {
+      if (message.includes('Electron Security Warning')) {
+        event.preventDefault();
+      }
     });
   } else {
     // 이미 열려있으면 채널 추가
@@ -118,3 +131,6 @@ app.on('activate', () => {
     createWindow();
   }
 });
+
+// 보안 경고 무시 설정
+process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';

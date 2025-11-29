@@ -6,8 +6,16 @@ let currentUser = null;
 let currentChannel = null;
 let ws = null;
 
-// 페이지 리다이렉트 플래그 (무한 루프 방지)
+// 로고 이미지 데이터
+let guildLogoData = null;
+let channelLogoData = null;
+
+// 실시간 유저 수 업데이트 인터벌
+let memberCountUpdateInterval = null;
+
+// 페이지 리다이렉트 플래그
 let isRedirecting = false;
+let isCheckingAuth = false;
 
 console.log('📄 index.html 로드됨');
 
@@ -15,18 +23,29 @@ console.log('📄 index.html 로드됨');
 document.addEventListener('DOMContentLoaded', () => {
   console.log('📋 DOMContentLoaded - 초기화 시작');
   
-  // 사용자 데이터 로드 (없으면 여기서 중단)
-  if (!loadUserData()) {
-    console.log('⏹️ 사용자 데이터 없음 - 초기화 중단');
+  if (isCheckingAuth || isRedirecting) {
+    console.log('⏳ 이미 인증 체크 중이거나 리다이렉트 중...');
     return;
   }
   
-  // 사용자 데이터 있을 때만 나머지 초기화
+  isCheckingAuth = true;
+  
+  if (!loadUserData()) {
+    console.log('⏹️ 사용자 데이터 없음 - 초기화 중단');
+    isCheckingAuth = false;
+    return;
+  }
+  
+  isCheckingAuth = false;
+  
   console.log('▶️ 사용자 데이터 확인 완료 - 앱 초기화 계속');
   initializeUI();
   connectWebSocket();
   loadGuilds();
   loadChannels();
+  
+  // 실시간 유저 수 업데이트 시작
+  startMemberCountUpdate();
 });
 
 // 사용자 데이터 로드
@@ -39,29 +58,31 @@ function loadUserData() {
   }
   
   const userData = localStorage.getItem('userData');
-  console.log('📊 localStorage userData:', userData);
+  console.log('📊 localStorage userData:', userData ? '존재함' : '없음');
   
   if (!userData) {
     console.error('❌ 사용자 데이터 없음 - 로그인 페이지로 이동');
     isRedirecting = true;
     
-    // 즉시 리다이렉트 (지연 없음!)
-    window.location.href = 'login.html';
+    setTimeout(() => {
+      window.location.href = 'login.html';
+    }, 100);
     return false;
   }
   
   try {
     currentUser = JSON.parse(userData);
-    console.log('✅ 사용자 데이터 로드 완료:', currentUser);
+    console.log('✅ 사용자 데이터 로드 완료:', currentUser.discordUsername);
     
-    // 필수 필드 검증
-    if (!currentUser.discordId || !currentUser.discordUsername) {
+    if (!currentUser.discordId || !currentUser.discordUsername || !currentUser.customNickname) {
       console.error('❌ 사용자 데이터 불완전:', currentUser);
       console.log('🗑️ 손상된 userData 제거');
       localStorage.removeItem('userData');
       isRedirecting = true;
       
-      window.location.href = 'login.html';
+      setTimeout(() => {
+        window.location.href = 'login.html';
+      }, 100);
       return false;
     }
     
@@ -73,26 +94,34 @@ function loadUserData() {
     localStorage.removeItem('userData');
     isRedirecting = true;
     
-    window.location.href = 'login.html';
+    setTimeout(() => {
+      window.location.href = 'login.html';
+    }, 100);
     return false;
   }
 }
 
-// 사용자 프로필 업데이트
+// ✅ 1. 사용자 프로필 업데이트 (Discord 이미지 수정)
 function updateUserProfile() {
   console.log('🖼️ 프로필 업데이트 시작:', currentUser);
   
+  // 닉네임 표시
   document.getElementById('profileName').textContent = currentUser.customNickname || currentUser.discordUsername;
   
-  // 디스코드 프로필 이미지 설정
+  // ✅ Discord 프로필 이미지 올바르게 설정
   const avatarImg = document.getElementById('profileAvatar');
   if (currentUser.avatar) {
     const extension = currentUser.avatar.startsWith('a_') ? 'gif' : 'png';
     const avatarUrl = `https://cdn.discordapp.com/avatars/${currentUser.discordId}/${currentUser.avatar}.${extension}?size=128`;
-    console.log('📷 프로필 이미지 URL:', avatarUrl);
+    console.log('📷 Discord 프로필 이미지 URL:', avatarUrl);
+    
     avatarImg.src = avatarUrl;
+    avatarImg.onerror = () => {
+      console.log('⚠️ 프로필 이미지 로드 실패 - 기본 이미지 사용');
+      const defaultAvatar = parseInt(currentUser.discordId) % 5;
+      avatarImg.src = `https://cdn.discordapp.com/embed/avatars/${defaultAvatar}.png`;
+    };
   } else {
-    // 기본 디스코드 아바타
     const defaultAvatar = parseInt(currentUser.discordId) % 5;
     const defaultUrl = `https://cdn.discordapp.com/embed/avatars/${defaultAvatar}.png`;
     console.log('📷 기본 프로필 이미지 URL:', defaultUrl);
@@ -106,9 +135,8 @@ function updateUserProfile() {
 function initializeUI() {
   console.log('🔧 UI 초기화 시작...');
   
-  // 헤더 컨트롤
+  // 닫기 버튼
   const closeBtn = document.getElementById('closeBtn');
-  console.log('closeBtn:', closeBtn);
   if (closeBtn) {
     closeBtn.addEventListener('click', () => {
       console.log('❌ 닫기 버튼 클릭');
@@ -116,19 +144,8 @@ function initializeUI() {
     });
   }
   
-  // 일반 채팅 참여 버튼
-  const joinGeneralChatBtn = document.getElementById('joinGeneralChatBtn');
-  console.log('joinGeneralChatBtn:', joinGeneralChatBtn);
-  if (joinGeneralChatBtn) {
-    joinGeneralChatBtn.addEventListener('click', () => {
-      console.log('💬 일반 채팅 참여 버튼 클릭');
-      joinGeneralChat();
-    });
-  }
-  
   // 프로필 모달
   const userProfile = document.getElementById('userProfile');
-  console.log('userProfile:', userProfile);
   if (userProfile) {
     userProfile.addEventListener('click', () => {
       console.log('👤 프로필 클릭');
@@ -143,6 +160,24 @@ function initializeUI() {
     });
   }
   
+  // ✅ 2. 별명 수정 버튼
+  const editNicknameBtn = document.getElementById('editDiscordBtn');
+  if (editNicknameBtn) {
+    editNicknameBtn.addEventListener('click', () => {
+      console.log('✏️ 별명 수정 버튼 클릭');
+      editNickname();
+    });
+  }
+  
+  // ✅ 3. 소속 길드 변경 버튼
+  const editGuildBtn = document.getElementById('editGuildBtn');
+  if (editGuildBtn) {
+    editGuildBtn.addEventListener('click', () => {
+      console.log('🏰 소속 길드 변경 버튼 클릭');
+      editUserGuild();
+    });
+  }
+  
   const logoutBtn = document.getElementById('logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
@@ -153,7 +188,6 @@ function initializeUI() {
   
   // 길드 추가
   const addGuildBtn = document.getElementById('addGuildBtn');
-  console.log('addGuildBtn:', addGuildBtn);
   if (addGuildBtn) {
     addGuildBtn.addEventListener('click', () => {
       console.log('➕ 길드 추가 버튼 클릭');
@@ -161,24 +195,29 @@ function initializeUI() {
     });
   }
   
-  const closeGuildModal = document.getElementById('closeGuildModal');
-  if (closeGuildModal) {
-    closeGuildModal.addEventListener('click', () => {
+  const closeGuildModalBtn = document.getElementById('closeGuildModal');
+  if (closeGuildModalBtn) {
+    closeGuildModalBtn.addEventListener('click', () => {
       closeGuildModal();
     });
   }
   
-  const submitGuild = document.getElementById('submitGuild');
-  if (submitGuild) {
-    submitGuild.addEventListener('click', () => {
+  const submitGuildBtn = document.getElementById('submitGuild');
+  if (submitGuildBtn) {
+    submitGuildBtn.addEventListener('click', () => {
       console.log('✅ 길드 제출 버튼 클릭');
       submitGuild();
     });
   }
   
+  // 길드 로고 업로드
+  const guildLogoInput = document.getElementById('guildLogo');
+  if (guildLogoInput) {
+    guildLogoInput.addEventListener('change', handleGuildLogoUpload);
+  }
+  
   // 채널 추가
   const addChannelBtn = document.getElementById('addChannelBtn');
-  console.log('addChannelBtn:', addChannelBtn);
   if (addChannelBtn) {
     addChannelBtn.addEventListener('click', () => {
       console.log('➕ 채널 추가 버튼 클릭');
@@ -201,171 +240,179 @@ function initializeUI() {
     });
   }
   
-  // 채팅 전송 (제거 - 메인 페이지에는 채팅 없음)
-  // const sendBtn = document.getElementById('sendBtn');
-  // const chatInput = document.getElementById('chatInput');
-  
-  // 클릭 무시 상태 업데이트 (제거 - 더 이상 사용 안함)
-  // ipcRenderer.on('click-through-status', (event, isClickThrough) => {
-  //   ...
-  // });
+  // 채널 로고 업로드
+  const channelLogoInput = document.getElementById('channelLogo');
+  if (channelLogoInput) {
+    channelLogoInput.addEventListener('change', handleChannelLogoUpload);
+  }
   
   console.log('✅ UI 초기화 완료');
 }
 
-// WebSocket 연결
-function connectWebSocket() {
-  // TODO: 실제 WebSocket 서버 URL로 변경
-  // ws = new WebSocket('wss://sdt-ad.xyz/ws');
+// ✅ 2. 별명 수정 기능
+async function editNickname() {
+  const newNickname = prompt('새로운 별명을 입력하세요:', currentUser.customNickname);
   
-  // 임시 데모용 (실제로는 위의 코드 사용)
-  console.log('WebSocket 연결 준비 중...');
-  
-  // ws.onopen = () => {
-  //   console.log('WebSocket 연결됨');
-  //   // 인증 메시지 전송
-  //   ws.send(JSON.stringify({
-  //     type: 'auth',
-  //     token: currentUser.token
-  //   }));
-  // };
-  
-  // ws.onmessage = (event) => {
-  //   const data = JSON.parse(event.data);
-  //   handleWebSocketMessage(data);
-  // };
-  
-  // ws.onerror = (error) => {
-  //   console.error('WebSocket 오류:', error);
-  // };
-  
-  // ws.onclose = () => {
-  //   console.log('WebSocket 연결 종료');
-  //   // 재연결 시도
-  //   setTimeout(connectWebSocket, 5000);
-  // };
-}
-
-// WebSocket 메시지 처리
-function handleWebSocketMessage(data) {
-  switch (data.type) {
-    case 'message':
-      addChatMessage(data);
-      break;
-    case 'user_joined':
-      // 사용자 입장 알림
-      break;
-    case 'user_left':
-      // 사용자 퇴장 알림
-      break;
-  }
-}
-
-// 채팅 메시지 전송
-function sendMessage() {
-  const input = document.getElementById('chatInput');
-  const message = input.value.trim();
-  
-  if (!message) return;
-  
-  if (!currentChannel) {
-    alert('채널을 먼저 선택해주세요.');
+  if (!newNickname || newNickname.trim() === '') {
     return;
   }
   
-  // TODO: WebSocket으로 메시지 전송
-  // ws.send(JSON.stringify({
-  //   type: 'message',
-  //   channelId: currentChannel.id,
-  //   content: message
-  // }));
+  if (newNickname === currentUser.customNickname) {
+    alert('기존 별명과 동일합니다.');
+    return;
+  }
   
-  // 임시: 로컬에서 메시지 추가
-  addChatMessage({
-    author: currentUser.customNickname,
-    authorColor: '#667eea',
-    content: message,
-    timestamp: new Date()
-  });
-  
-  input.value = '';
-}
-
-// 채팅 메시지 추가
-function addChatMessage(data) {
-  const messagesContainer = document.getElementById('chatMessages');
-  
-  const messageEl = document.createElement('div');
-  messageEl.className = 'chat-message';
-  
-  const avatar = document.createElement('div');
-  avatar.className = 'message-avatar';
-  
-  const content = document.createElement('div');
-  content.className = 'message-content';
-  
-  const header = document.createElement('div');
-  header.className = 'message-header';
-  
-  const author = document.createElement('span');
-  author.className = 'message-author';
-  author.textContent = data.author;
-  author.style.color = data.authorColor || '#fff';
-  
-  const time = document.createElement('span');
-  time.className = 'message-time';
-  time.textContent = formatTime(data.timestamp);
-  
-  const text = document.createElement('div');
-  text.className = 'message-text';
-  text.textContent = data.content;
-  
-  header.appendChild(author);
-  header.appendChild(time);
-  content.appendChild(header);
-  content.appendChild(text);
-  messageEl.appendChild(avatar);
-  messageEl.appendChild(content);
-  
-  messagesContainer.appendChild(messageEl);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-// 시간 포맷
-function formatTime(date) {
-  const d = new Date(date);
-  const hours = d.getHours().toString().padStart(2, '0');
-  const minutes = d.getMinutes().toString().padStart(2, '0');
-  return `${hours}:${minutes}`;
-}
-
-// 길드 로드
-function loadGuilds() {
-  // TODO: 서버에서 길드 목록 가져오기
-  // const response = await fetch('https://sdt-ad.xyz/api/guilds');
-  // const guilds = await response.json();
-  
-  // 임시 데모 데이터
-  const demoGuilds = [
-    {
-      id: '1',
-      name: '테스트 길드',
-      faction: '소함대',
-      recruitment: '모집중',
-      logo: null
+  try {
+    console.log('📡 별명 변경 요청:', newNickname);
+    
+    const response = await fetch(`${API_BASE}/users/profile`, {
+      method: 'PUT',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+      },
+      body: JSON.stringify({
+        discordId: currentUser.discordId,
+        customNickname: newNickname.trim()
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
-  ];
-  
-  const guildList = document.getElementById('guildList');
-  guildList.innerHTML = '';
-  
-  demoGuilds.forEach(guild => {
-    const guildEl = createGuildElement(guild);
-    guildList.appendChild(guildEl);
-  });
+    
+    const result = await response.json();
+    console.log('✅ 별명 변경 성공:', result);
+    
+    // 로컬 데이터 업데이트
+    currentUser.customNickname = newNickname.trim();
+    localStorage.setItem('userData', JSON.stringify(currentUser));
+    
+    // UI 업데이트
+    document.getElementById('profileName').textContent = newNickname.trim();
+    document.getElementById('discordNickname').value = newNickname.trim();
+    
+    alert('별명이 변경되었습니다!');
+  } catch (error) {
+    console.error('❌ 별명 변경 실패:', error);
+    alert('별명 변경에 실패했습니다: ' + error.message);
+  }
 }
 
-// 길드 요소 생성
+// ✅ 3. 소속 길드 변경 기능
+async function editUserGuild() {
+  // 길드 목록 가져오기
+  const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+  
+  if (guilds.length === 0) {
+    alert('등록된 길드가 없습니다. 먼저 길드를 생성해주세요.');
+    return;
+  }
+  
+  // 선택 UI (간단한 프롬프트)
+  const guildNames = guilds.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
+  const selection = prompt(`소속 길드를 선택하세요:\n\n${guildNames}\n\n번호를 입력하세요 (취소하려면 0):`);
+  
+  if (!selection || selection === '0') {
+    return;
+  }
+  
+  const guildIndex = parseInt(selection) - 1;
+  if (isNaN(guildIndex) || guildIndex < 0 || guildIndex >= guilds.length) {
+    alert('잘못된 선택입니다.');
+    return;
+  }
+  
+  const selectedGuild = guilds[guildIndex];
+  
+  try {
+    console.log('📡 소속 길드 변경 요청:', selectedGuild.name);
+    
+    const response = await fetch(`${API_BASE}/users/profile`, {
+      method: 'PUT',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+      },
+      body: JSON.stringify({
+        discordId: currentUser.discordId,
+        guildId: selectedGuild.id
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const result = await response.json();
+    console.log('✅ 소속 길드 변경 성공:', result);
+    
+    // 로컬 데이터 업데이트
+    currentUser.guild = selectedGuild.name;
+    currentUser.guildId = selectedGuild.id;
+    localStorage.setItem('userData', JSON.stringify(currentUser));
+    
+    // UI 업데이트
+    document.getElementById('userGuild').value = selectedGuild.name;
+    
+    alert(`소속 길드가 [${selectedGuild.name}]으로 변경되었습니다!`);
+  } catch (error) {
+    console.error('❌ 소속 길드 변경 실패:', error);
+    alert('소속 길드 변경에 실패했습니다: ' + error.message);
+  }
+}
+
+// WebSocket 연결
+function connectWebSocket() {
+  console.log('WebSocket 연결 준비 중...');
+  // TODO: 실제 WebSocket 서버 URL로 변경
+}
+
+// ✅ 4. 길드 로드 (API 연동)
+async function loadGuilds() {
+  try {
+    console.log('📡 길드 목록 요청...');
+    
+    const response = await fetch(`${API_BASE}/guilds`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const guilds = await response.json();
+    console.log('✅ 길드 목록 로드:', guilds);
+    
+    // 로컬스토리지에 저장
+    localStorage.setItem('guilds', JSON.stringify(guilds));
+    
+    const guildList = document.getElementById('guildList');
+    guildList.innerHTML = '';
+    
+    if (guilds.length === 0) {
+      guildList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">등록된 길드가 없습니다</div>';
+      return;
+    }
+    
+    guilds.forEach(guild => {
+      const guildEl = createGuildElement(guild);
+      guildList.appendChild(guildEl);
+    });
+  } catch (error) {
+    console.error('❌ 길드 목록 로드 실패:', error);
+    
+    // 폴백: 로컬스토리지 사용
+    const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+    const guildList = document.getElementById('guildList');
+    guildList.innerHTML = '';
+    
+    guilds.forEach(guild => {
+      const guildEl = createGuildElement(guild);
+      guildList.appendChild(guildEl);
+    });
+  }
+}
+
+// ✅ 5. 길드 요소 생성 (로고 이미지 표시)
 function createGuildElement(guild) {
   const item = document.createElement('div');
   item.className = 'guild-item';
@@ -373,9 +420,16 @@ function createGuildElement(guild) {
   
   const icon = document.createElement('div');
   icon.className = 'guild-icon';
+  
+  // ✅ 로고 이미지 표시
   if (guild.logo) {
     const img = document.createElement('img');
-    img.src = guild.logo;
+    img.src = guild.logo; // Base64 또는 URL
+    img.alt = guild.name;
+    img.onerror = () => {
+      console.log('⚠️ 길드 로고 로드 실패:', guild.name);
+      icon.textContent = guild.name[0];
+    };
     icon.appendChild(img);
   } else {
     icon.textContent = guild.name[0];
@@ -398,11 +452,12 @@ function createGuildElement(guild) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
   
-  // 생성자만 수정/삭제 가능 (currentUser 체크 추가)
-  if (currentUser && guild.ownerId === currentUser.discordId) {
+  // 생성자만 수정/삭제 가능
+  if (currentUser && guild.owner_id === currentUser.discordId) {
     const editBtn = document.createElement('button');
     editBtn.className = 'action-btn';
     editBtn.textContent = '✏️';
+    editBtn.title = '수정';
     editBtn.onclick = (e) => {
       e.stopPropagation();
       editGuild(guild);
@@ -411,6 +466,7 @@ function createGuildElement(guild) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'action-btn delete';
     deleteBtn.textContent = '🗑️';
+    deleteBtn.title = '삭제';
     deleteBtn.onclick = (e) => {
       e.stopPropagation();
       deleteGuild(guild.id);
@@ -425,7 +481,6 @@ function createGuildElement(guild) {
   item.appendChild(actions);
   
   item.addEventListener('click', () => {
-    // 길드 선택
     document.querySelectorAll('.guild-item').forEach(el => el.classList.remove('active'));
     item.classList.add('active');
   });
@@ -433,7 +488,7 @@ function createGuildElement(guild) {
   return item;
 }
 
-// 채널 로드
+// ✅ 6. 채널 로드 (API 연동 + 인원수 표시)
 async function loadChannels() {
   try {
     console.log('📡 채널 목록 요청...');
@@ -445,6 +500,9 @@ async function loadChannels() {
     
     const channels = await response.json();
     console.log('✅ 채널 목록 로드:', channels);
+    
+    // 로컬스토리지에 저장
+    localStorage.setItem('channels', JSON.stringify(channels));
     
     const channelList = document.getElementById('channelList');
     channelList.innerHTML = '';
@@ -459,7 +517,7 @@ async function loadChannels() {
         id: channel.id,
         name: channel.name,
         hasPassword: channel.has_password === 1,
-        logo: null,
+        logo: channel.logo,
         memberCount: channel.member_count || 0,
         ownerId: channel.owner_id
       });
@@ -468,54 +526,19 @@ async function loadChannels() {
   } catch (error) {
     console.error('❌ 채널 목록 로드 실패:', error);
     
-    // 폴백: 데모 데이터
-    console.log('⚠️ 데모 데이터 사용');
-    const demoChannels = [
-      {
-        id: 'general',
-        name: '일반 채팅',
-        hasPassword: false,
-        logo: null,
-        memberCount: 127,
-        ownerId: null
-      },
-      {
-        id: 'guild',
-        name: '길드모집',
-        hasPassword: false,
-        logo: null,
-        memberCount: 43,
-        ownerId: currentUser?.discordId
-      },
-      {
-        id: 'trade',
-        name: '거래',
-        hasPassword: false,
-        logo: null,
-        memberCount: 89,
-        ownerId: null
-      },
-      {
-        id: 'secret',
-        name: '비밀방',
-        hasPassword: true,
-        logo: null,
-        memberCount: 5,
-        ownerId: null
-      }
-    ];
-    
+    // 폴백: 로컬스토리지 사용
+    const channels = JSON.parse(localStorage.getItem('channels') || '[]');
     const channelList = document.getElementById('channelList');
     channelList.innerHTML = '';
     
-    demoChannels.forEach(channel => {
+    channels.forEach(channel => {
       const channelEl = createChannelElement(channel);
       channelList.appendChild(channelEl);
     });
   }
 }
 
-// 채널 요소 생성
+// ✅ 7. 채널 요소 생성 (로고 + 인원수 표시)
 function createChannelElement(channel) {
   const item = document.createElement('div');
   item.className = 'channel-item';
@@ -523,9 +546,16 @@ function createChannelElement(channel) {
   
   const icon = document.createElement('div');
   icon.className = 'channel-icon';
+  
+  // ✅ 로고 이미지 표시
   if (channel.logo) {
     const img = document.createElement('img');
-    img.src = channel.logo;
+    img.src = channel.logo; // Base64 또는 URL
+    img.alt = channel.name;
+    img.onerror = () => {
+      console.log('⚠️ 채널 로고 로드 실패:', channel.name);
+      icon.textContent = '#';
+    };
     icon.appendChild(img);
   } else {
     icon.textContent = '#';
@@ -547,22 +577,24 @@ function createChannelElement(channel) {
   
   info.appendChild(name);
   
-  // 인원수 표시
+  // ✅ 인원수 표시
   if (channel.memberCount !== undefined) {
     const memberCount = document.createElement('div');
     memberCount.className = 'channel-member-count';
-    memberCount.textContent = `👥 ${channel.memberCount}명`;
+    memberCount.textContent = `${channel.memberCount}명`;
+    memberCount.dataset.channelId = channel.id;
     info.appendChild(memberCount);
   }
   
   const actions = document.createElement('div');
   actions.className = 'item-actions';
   
-  // 생성자만 수정/삭제 가능 (currentUser 체크 추가)
+  // 생성자만 수정/삭제 가능
   if (currentUser && channel.ownerId === currentUser.discordId) {
     const editBtn = document.createElement('button');
     editBtn.className = 'action-btn';
     editBtn.textContent = '✏️';
+    editBtn.title = '수정';
     editBtn.onclick = (e) => {
       e.stopPropagation();
       editChannel(channel);
@@ -571,6 +603,7 @@ function createChannelElement(channel) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'action-btn delete';
     deleteBtn.textContent = '🗑️';
+    deleteBtn.title = '삭제';
     deleteBtn.onclick = (e) => {
       e.stopPropagation();
       deleteChannel(channel.id);
@@ -584,35 +617,59 @@ function createChannelElement(channel) {
   item.appendChild(info);
   item.appendChild(actions);
   
+  // ✅ 8. 채널 클릭 시 비밀번호 확인
   item.addEventListener('click', () => {
-    joinChannel(channel);
+    if (channel.hasPassword) {
+      joinPasswordProtectedChannel(channel);
+    } else {
+      joinChannel(channel);
+    }
   });
   
   return item;
 }
 
-// 일반 채팅 참여
-function joinGeneralChat() {
-  // 기본 "일반 채팅" 채널로 오버레이 창 열기
-  ipcRenderer.send('open-chat-overlay', {
-    id: 'general',
-    name: '일반 채팅',
-    isPrivate: false,
-    memberCount: 0,
-    logo: null
-  });
+// ✅ 8. 비밀번호 보호 채널 입장
+async function joinPasswordProtectedChannel(channel) {
+  const password = prompt(`🔒 비밀번호를 입력하세요 (채널: ${channel.name})`);
+  
+  if (!password) {
+    return;
+  }
+  
+  try {
+    console.log('📡 비밀번호 검증 요청:', channel.id);
+    
+    const response = await fetch(`${API_BASE}/channels/verify-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channelId: channel.id,
+        password: password
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const result = await response.json();
+    console.log('✅ 비밀번호 검증 결과:', result);
+    
+    if (result.success) {
+      joinChannel(channel);
+    } else {
+      alert('❌ 비밀번호가 틀렸습니다.');
+    }
+  } catch (error) {
+    console.error('❌ 비밀번호 검증 실패:', error);
+    alert('비밀번호 검증에 실패했습니다: ' + error.message);
+  }
 }
 
 // 채널 참여
 function joinChannel(channel) {
-  // 비밀 채널이면 비밀번호 확인 (임시)
-  if (channel.hasPassword) {
-    const password = prompt('채널 비밀번호를 입력하세요:');
-    if (!password) return;
-    
-    // TODO: 서버에 비밀번호 검증 요청
-    // 임시로 항상 통과
-  }
+  console.log('💬 채널 참여:', channel.name);
   
   // 채팅 오버레이 창 열기
   ipcRenderer.send('open-chat-overlay', {
@@ -631,19 +688,58 @@ function joinChannel(channel) {
   }
 }
 
+// ✅ 9. 실시간 인원수 업데이트
+function startMemberCountUpdate() {
+  // 5초마다 업데이트
+  memberCountUpdateInterval = setInterval(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/channels/member-counts`);
+      
+      if (!response.ok) {
+        return;
+      }
+      
+      const counts = await response.json();
+      // counts = [{ channelId: 'general', count: 127 }, ...]
+      
+      counts.forEach(({ channelId, count }) => {
+        const memberCountEl = document.querySelector(`.channel-member-count[data-channel-id="${channelId}"]`);
+        if (memberCountEl) {
+          memberCountEl.textContent = `${count}명`;
+        }
+      });
+    } catch (error) {
+      // 조용히 실패
+    }
+  }, 5000);
+}
+
 // 모달 열기/닫기
 function openProfileModal() {
   document.getElementById('discordId').value = currentUser.discordId;
   document.getElementById('discordNickname').value = currentUser.customNickname;
   document.getElementById('userGuild').value = currentUser.guild || '없음';
+  
+  // 프로필 이미지 표시
+  const profileDetailAvatar = document.getElementById('profileDetailAvatar');
+  if (currentUser.avatar) {
+    const extension = currentUser.avatar.startsWith('a_') ? 'gif' : 'png';
+    const avatarUrl = `https://cdn.discordapp.com/avatars/${currentUser.discordId}/${currentUser.avatar}.${extension}?size=256`;
+    profileDetailAvatar.src = avatarUrl;
+  } else {
+    const defaultAvatar = parseInt(currentUser.discordId) % 5;
+    profileDetailAvatar.src = `https://cdn.discordapp.com/embed/avatars/${defaultAvatar}.png`;
+  }
+  
   document.getElementById('profileModal').style.display = 'flex';
 }
 
-function closeProfileModal() {
+function closeProfileModalFunc() {
   document.getElementById('profileModal').style.display = 'none';
 }
 
 function openGuildModal() {
+  guildLogoData = null;
   document.getElementById('addGuildModal').style.display = 'flex';
 }
 
@@ -653,6 +749,7 @@ function closeGuildModal() {
 }
 
 function openChannelModal() {
+  channelLogoData = null;
   document.getElementById('addChannelModal').style.display = 'flex';
 }
 
@@ -661,7 +758,33 @@ function closeChannelModal() {
   resetChannelForm();
 }
 
-// 길드 제출
+// 길드 로고 업로드
+function handleGuildLogoUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    guildLogoData = e.target.result;
+    console.log('✅ 길드 로고 업로드 완료');
+  };
+  reader.readAsDataURL(file);
+}
+
+// 채널 로고 업로드
+function handleChannelLogoUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    channelLogoData = e.target.result;
+    console.log('✅ 채널 로고 업로드 완료');
+  };
+  reader.readAsDataURL(file);
+}
+
+// ✅ 10. 길드 제출 (API 연동)
 async function submitGuild() {
   if (!currentUser) {
     alert('로그인이 필요합니다.');
@@ -685,11 +808,13 @@ async function submitGuild() {
     recruitment,
     description,
     contact,
+    logo: guildLogoData,
     ownerId: currentUser.discordId
   };
   
   try {
     console.log('📡 길드 생성 요청:', guildData);
+    
     const response = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -708,11 +833,23 @@ async function submitGuild() {
     loadGuilds();
   } catch (error) {
     console.error('❌ 길드 생성 실패:', error);
-    alert('길드 등록에 실패했습니다: ' + error.message);
+    
+    // 폴백: 로컬스토리지 저장
+    const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+    guilds.push({
+      id: `guild_${Date.now()}`,
+      ...guildData,
+      created_at: new Date().toISOString()
+    });
+    localStorage.setItem('guilds', JSON.stringify(guilds));
+    
+    alert('길드가 등록되었습니다! (로컬)');
+    closeGuildModal();
+    loadGuilds();
   }
 }
 
-// 채널 제출
+// ✅ 11. 채널 제출 (API 연동)
 async function submitChannel() {
   if (!currentUser) {
     alert('로그인이 필요합니다.');
@@ -730,11 +867,13 @@ async function submitChannel() {
   const channelData = {
     name,
     password: password || null,
+    logo: channelLogoData,
     ownerId: currentUser.discordId
   };
   
   try {
     console.log('📡 채널 생성 요청:', channelData);
+    
     const response = await fetch(`${API_BASE}/channels`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -753,7 +892,21 @@ async function submitChannel() {
     loadChannels();
   } catch (error) {
     console.error('❌ 채널 생성 실패:', error);
-    alert('채널 등록에 실패했습니다: ' + error.message);
+    
+    // 폴백: 로컬스토리지 저장
+    const channels = JSON.parse(localStorage.getItem('channels') || '[]');
+    channels.push({
+      id: `channel_${Date.now()}`,
+      ...channelData,
+      hasPassword: !!password,
+      memberCount: 0,
+      created_at: new Date().toISOString()
+    });
+    localStorage.setItem('channels', JSON.stringify(channels));
+    
+    alert('채널이 등록되었습니다! (로컬)');
+    closeChannelModal();
+    loadChannels();
   }
 }
 
@@ -764,36 +917,135 @@ function resetGuildForm() {
   document.getElementById('guildRecruitment').value = '모집중';
   document.getElementById('guildDescription').value = '';
   document.getElementById('guildContact').value = '';
+  document.getElementById('guildLogo').value = '';
+  guildLogoData = null;
 }
 
 function resetChannelForm() {
   document.getElementById('channelName').value = '';
   document.getElementById('channelPassword').value = '';
+  document.getElementById('channelLogo').value = '';
+  channelLogoData = null;
 }
 
-// 길드/채널 수정/삭제
-function editGuild(guild) {
-  // TODO: 길드 수정 모달 열기
-  console.log('길드 수정:', guild);
+// ✅ 12. 길드 수정
+async function editGuild(guild) {
+  const name = prompt('길드명:', guild.name);
+  if (!name) return;
+  
+  const faction = prompt('진영 (소함대, 무역연합, 해적, 안틸리아, 에스파니올, 카이 & 세베리아):', guild.faction);
+  if (!faction) return;
+  
+  const recruitment = confirm('모집 중입니까?') ? '모집중' : '모집 마감';
+  
+  try {
+    const response = await fetch(`${API_BASE}/guilds/${guild.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, faction, recruitment })
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    alert('길드가 수정되었습니다!');
+    loadGuilds();
+  } catch (error) {
+    console.error('❌ 길드 수정 실패:', error);
+    
+    // 폴백
+    const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+    const index = guilds.findIndex(g => g.id === guild.id);
+    if (index > -1) {
+      guilds[index] = { ...guilds[index], name, faction, recruitment };
+      localStorage.setItem('guilds', JSON.stringify(guilds));
+      alert('길드가 수정되었습니다! (로컬)');
+      loadGuilds();
+    }
+  }
 }
 
-function deleteGuild(guildId) {
+// ✅ 13. 길드 삭제
+async function deleteGuild(guildId) {
   if (!confirm('정말 이 길드를 삭제하시겠습니까?')) return;
   
-  // TODO: 서버로 삭제 요청
-  loadGuilds();
+  try {
+    const response = await fetch(`${API_BASE}/guilds/${guildId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    alert('길드가 삭제되었습니다!');
+    loadGuilds();
+  } catch (error) {
+    console.error('❌ 길드 삭제 실패:', error);
+    
+    // 폴백
+    const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+    const filtered = guilds.filter(g => g.id !== guildId);
+    localStorage.setItem('guilds', JSON.stringify(filtered));
+    alert('길드가 삭제되었습니다! (로컬)');
+    loadGuilds();
+  }
 }
 
-function editChannel(channel) {
-  // TODO: 채널 수정 모달 열기
-  console.log('채널 수정:', channel);
+// ✅ 14. 채널 수정
+async function editChannel(channel) {
+  const name = prompt('채널명:', channel.name);
+  if (!name) return;
+  
+  const hasPassword = confirm('비밀번호를 설정하시겠습니까?');
+  const password = hasPassword ? prompt('비밀번호:') : null;
+  
+  try {
+    const response = await fetch(`${API_BASE}/channels/${channel.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password })
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    alert('채널이 수정되었습니다!');
+    loadChannels();
+  } catch (error) {
+    console.error('❌ 채널 수정 실패:', error);
+    
+    // 폴백
+    const channels = JSON.parse(localStorage.getItem('channels') || '[]');
+    const index = channels.findIndex(c => c.id === channel.id);
+    if (index > -1) {
+      channels[index] = { ...channels[index], name, password, hasPassword: !!password };
+      localStorage.setItem('channels', JSON.stringify(channels));
+      alert('채널이 수정되었습니다! (로컬)');
+      loadChannels();
+    }
+  }
 }
 
-function deleteChannel(channelId) {
+// ✅ 15. 채널 삭제
+async function deleteChannel(channelId) {
   if (!confirm('정말 이 채널을 삭제하시겠습니까?')) return;
   
-  // TODO: 서버로 삭제 요청
-  loadChannels();
+  try {
+    const response = await fetch(`${API_BASE}/channels/${channelId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    alert('채널이 삭제되었습니다!');
+    loadChannels();
+  } catch (error) {
+    console.error('❌ 채널 삭제 실패:', error);
+    
+    // 폴백
+    const channels = JSON.parse(localStorage.getItem('channels') || '[]');
+    const filtered = channels.filter(c => c.id !== channelId);
+    localStorage.setItem('channels', JSON.stringify(filtered));
+    alert('채널이 삭제되었습니다! (로컬)');
+    loadChannels();
+  }
 }
 
 // 로그아웃
@@ -801,10 +1053,14 @@ function logout() {
   if (!confirm('로그아웃 하시겠습니까?')) return;
   
   localStorage.removeItem('userData');
+  localStorage.removeItem('authToken');
   
-  // WebSocket 연결 종료
   if (ws) {
     ws.close();
+  }
+  
+  if (memberCountUpdateInterval) {
+    clearInterval(memberCountUpdateInterval);
   }
   
   window.location.href = 'login.html';

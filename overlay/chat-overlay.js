@@ -6,7 +6,7 @@ let channels = [];
 let activeChannelId = null;
 let ws = null;
 let currentUser = null;
-let pendingChannel = null; // 비밀번호 입력 대기 중인 채널
+let pendingChannel = null;
 
 // 초기화
 document.addEventListener('DOMContentLoaded', () => {
@@ -24,6 +24,7 @@ function loadUserData() {
   const userData = localStorage.getItem('userData');
   if (userData) {
     currentUser = JSON.parse(userData);
+    console.log('✅ 사용자 데이터 로드:', currentUser);
   }
 }
 
@@ -33,7 +34,6 @@ function initializeUI() {
   
   // 닫기 버튼
   const closeBtn = document.getElementById('closeBtn');
-  console.log('closeBtn:', closeBtn);
   if (closeBtn) {
     closeBtn.addEventListener('click', () => {
       console.log('❌ 채팅창 닫기 버튼 클릭');
@@ -120,9 +120,10 @@ function addChannel(channelData) {
   
   tab.appendChild(document.createTextNode(channelData.name));
   
-  // 인원수 표시
+  // ✅ 인원수 표시 (실시간 업데이트)
   const userCount = document.createElement('span');
   userCount.className = 'user-count';
+  userCount.dataset.channelId = channelData.id;
   userCount.textContent = `(${channelData.memberCount || 0})`;
   tab.appendChild(userCount);
   
@@ -179,6 +180,9 @@ function addChannel(channelData) {
   if (channels.length === 1) {
     switchChannel(channelData.id);
   }
+  
+  // 실시간 인원수 업데이트 시작
+  startMemberCountUpdate(channelData.id);
 }
 
 // 채널 전환
@@ -261,7 +265,13 @@ function connectToChannel(channelData) {
       console.log('📨 메시지 수신:', event.data);
       try {
         const messageData = JSON.parse(event.data);
-        addMessage(channelData.id, messageData);
+        
+        // 인원수 업데이트 메시지
+        if (messageData.type === 'member_count') {
+          updateMemberCount(messageData.channelId, messageData.count);
+        } else {
+          addMessage(channelData.id, messageData);
+        }
       } catch (error) {
         console.error('메시지 파싱 오류:', error);
       }
@@ -298,7 +308,7 @@ function connectToChannel(channelData) {
   }
 }
 
-// 메시지 추가
+// ✅ 메시지 추가 (길드 태그 표시)
 function addMessage(channelId, messageData) {
   const messagesContainer = document.getElementById(`messages-${channelId}`);
   if (!messagesContainer) return;
@@ -308,7 +318,7 @@ function addMessage(channelId, messageData) {
   
   const avatar = document.createElement('img');
   avatar.className = 'avatar';
-  avatar.src = messageData.avatar;
+  avatar.src = messageData.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
   avatar.alt = 'Avatar';
   
   const messageBody = document.createElement('div');
@@ -319,7 +329,20 @@ function addMessage(channelId, messageData) {
   
   const author = document.createElement('span');
   author.className = 'author';
-  author.textContent = messageData.author;
+  
+  // ✅ 길드 태그 표시: [길드명] 사용자별명
+  if (messageData.guild && messageData.guild !== '없음') {
+    const guildTag = document.createElement('span');
+    guildTag.className = 'guild-tag';
+    guildTag.textContent = `[${messageData.guild}] `;
+    guildTag.style.color = '#667eea';
+    guildTag.style.fontWeight = '700';
+    author.appendChild(guildTag);
+  }
+  
+  const authorName = document.createElement('span');
+  authorName.textContent = messageData.author;
+  author.appendChild(authorName);
   
   const timestamp = document.createElement('span');
   timestamp.className = 'timestamp';
@@ -343,7 +366,7 @@ function addMessage(channelId, messageData) {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// 메시지 전송
+// ✅ 메시지 전송 (길드 정보 포함)
 function sendMessage(channelId, content) {
   console.log('📤 메시지 전송:', channelId, content);
   
@@ -361,6 +384,7 @@ function sendMessage(channelId, content) {
     author: currentUser.customNickname || currentUser.discordUsername,
     authorId: currentUser.discordId,
     avatar: avatarUrl,
+    guild: currentUser.guild || '없음', // ✅ 길드 정보 포함
     content: content,
     timestamp: new Date()
   };
@@ -377,19 +401,40 @@ function sendMessage(channelId, content) {
   addMessage(channelId, messageData);
 }
 
-// 비밀번호 모달 표시
+// ✅ 실시간 인원수 업데이트
+function startMemberCountUpdate(channelId) {
+  setInterval(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/channels/${channelId}/member-count`);
+      
+      if (response.ok) {
+        const { count } = await response.json();
+        updateMemberCount(channelId, count);
+      }
+    } catch (error) {
+      // 조용히 실패
+    }
+  }, 5000);
+}
+
+function updateMemberCount(channelId, count) {
+  const userCountEl = document.querySelector(`.user-count[data-channel-id="${channelId}"]`);
+  if (userCountEl) {
+    userCountEl.textContent = `(${count})`;
+  }
+}
+
+// 비밀번호 모달
 function showPasswordModal() {
   document.getElementById('passwordModal').classList.add('active');
   document.getElementById('passwordInput').focus();
 }
 
-// 비밀번호 모달 숨기기
 function hidePasswordModal() {
   document.getElementById('passwordModal').classList.remove('active');
   document.getElementById('passwordInput').value = '';
 }
 
-// 비밀번호 확인
 async function handlePasswordConfirm() {
   const password = document.getElementById('passwordInput').value;
   
@@ -430,10 +475,9 @@ async function handlePasswordConfirm() {
   }
 }
 
-// 채널 목록에서 채널 추가
+// 채널 추가 (비밀번호 확인)
 function addChannelFromList(channel) {
   if (channel.isPrivate) {
-    // 비밀 채널이면 비밀번호 입력
     pendingChannel = channel;
     showPasswordModal();
   } else {
@@ -441,12 +485,11 @@ function addChannelFromList(channel) {
   }
 }
 
-// 채널 선택 모달 열기
+// 채널 선택 모달
 async function openChannelSelectModal() {
   const modal = document.getElementById('channelSelectModal');
   const list = document.getElementById('channelSelectList');
   
-  // 채널 목록 가져오기
   try {
     console.log('📡 채널 목록 요청...');
     const response = await fetch(`${API_BASE}/channels`);
@@ -514,10 +557,6 @@ async function openChannelSelectModal() {
   }
 }
 
-// 채널 선택 모달 닫기
 function closeChannelSelectModal() {
   document.getElementById('channelSelectModal').classList.remove('active');
 }
-
-// 채널 목록에서 채널 추가
-

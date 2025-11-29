@@ -5,31 +5,38 @@ console.log('🔐 로그인 페이지 로드됨');
 
 // 페이지 리다이렉트 플래그 (무한 루프 방지)
 let isRedirecting = false;
+let isCheckingAuth = false;
 
 // 페이지 로드 시 이미 로그인되어 있는지 확인
 document.addEventListener('DOMContentLoaded', () => {
   console.log('📋 DOMContentLoaded - 로그인 상태 확인 중...');
   
-  if (isRedirecting) {
-    console.log('⏳ 이미 리다이렉트 중...');
+  // 이미 체크 중이면 중단
+  if (isCheckingAuth || isRedirecting) {
+    console.log('⏳ 이미 인증 체크 중이거나 리다이렉트 중...');
     return;
   }
   
+  isCheckingAuth = true;
+  
   const userData = localStorage.getItem('userData');
-  console.log('📊 localStorage userData:', userData);
+  console.log('📊 localStorage userData:', userData ? '존재함' : '없음');
   
   if (userData) {
     try {
       const user = JSON.parse(userData);
-      console.log('✅ 유효한 사용자 데이터 발견:', user);
+      console.log('✅ 유효한 사용자 데이터 발견:', user.discordUsername);
       
       // 필수 필드 검증
-      if (user.discordId && user.discordUsername) {
-        console.log('🔄 index.html로 즉시 리다이렉트');
+      if (user.discordId && user.discordUsername && user.customNickname) {
+        console.log('🔄 index.html로 리다이렉트');
         isRedirecting = true;
         
-        // 즉시 리다이렉트
-        window.location.href = 'index.html';
+        // 약간의 지연 후 리다이렉트 (DOM 준비 보장)
+        setTimeout(() => {
+          window.location.href = 'index.html';
+        }, 100);
+        return;
       } else {
         console.log('⚠️ 사용자 데이터 불완전 - 로그인 필요');
         localStorage.removeItem('userData');
@@ -42,33 +49,53 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     console.log('ℹ️ 로그인되지 않음 - 로그인 페이지 유지');
   }
+  
+  isCheckingAuth = false;
+  
+  // UI 이벤트 리스너 등록
+  initializeUI();
 });
 
-// 창 닫기 버튼
-document.getElementById('loginCloseBtn').addEventListener('click', () => {
-  window.close();
-});
+// UI 초기화
+function initializeUI() {
+  // 창 닫기 버튼
+  document.getElementById('loginCloseBtn').addEventListener('click', () => {
+    ipcRenderer.send('close-window');
+  });
+
+  // 디스코드 로그인 버튼
+  document.getElementById('discordLoginBtn').addEventListener('click', async () => {
+    startDiscordOAuth();
+  });
+
+  // localStorage 초기화 버튼 (문제 해결용)
+  document.getElementById('clearStorageBtn').addEventListener('click', () => {
+    console.log('🗑️ localStorage 초기화 버튼 클릭');
+    
+    if (confirm('모든 로그인 정보가 삭제됩니다. 계속하시겠습니까?')) {
+      localStorage.clear();
+      sessionStorage.clear();
+      console.log('✅ localStorage/sessionStorage 초기화 완료');
+      alert('초기화 완료! 페이지를 새로고침합니다.');
+      location.reload();
+    }
+  });
+
+  // 프로필 제출 버튼
+  document.getElementById('submitProfile').addEventListener('click', async () => {
+    await submitProfile();
+  });
+
+  // 엔터키로 완료
+  document.getElementById('nicknameInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      document.getElementById('submitProfile').click();
+    }
+  });
+}
 
 // Discord OAuth 상태 저장
 let authCheckInterval = null;
-
-// 디스코드 로그인 버튼
-document.getElementById('discordLoginBtn').addEventListener('click', async () => {
-  startDiscordOAuth();
-});
-
-// localStorage 초기화 버튼 (문제 해결용)
-document.getElementById('clearStorageBtn').addEventListener('click', () => {
-  console.log('🗑️ localStorage 초기화 버튼 클릭');
-  
-  if (confirm('모든 로그인 정보가 삭제됩니다. 계속하시겠습니까?')) {
-    localStorage.clear();
-    sessionStorage.clear();
-    console.log('✅ localStorage/sessionStorage 초기화 완료');
-    alert('초기화 완료! 페이지를 새로고침합니다.');
-    location.reload();
-  }
-});
 
 // Discord OAuth 시작
 function startDiscordOAuth() {
@@ -157,6 +184,7 @@ function waitForAuthCallback() {
           localStorage.setItem('sessionId', data.sessionId);
           
           clearInterval(authCheckInterval);
+          authCheckInterval = null;
           handleAuthSuccess(data.user);
         } else {
           console.log('세션 대기 중... (아직 인증 안됨)');
@@ -174,6 +202,7 @@ function waitForAuthCallback() {
   setTimeout(() => {
     if (authCheckInterval) {
       clearInterval(authCheckInterval);
+      authCheckInterval = null;
       resetLoginState();
       alert('로그인 시간이 만료되었습니다. 다시 시도해주세요.');
     }
@@ -208,8 +237,8 @@ function showProfileSettings(discordUser) {
   };
 }
 
-// 프로필 완료 버튼
-document.getElementById('submitProfile').addEventListener('click', async () => {
+// 프로필 완료
+async function submitProfile() {
   const nickname = document.getElementById('nicknameInput').value.trim();
   
   if (!nickname) {
@@ -249,7 +278,12 @@ document.getElementById('submitProfile').addEventListener('click', async () => {
       
       // 메인 화면으로 이동
       console.log('🔄 index.html로 이동...');
-      window.location.href = 'index.html';
+      isRedirecting = true;
+      
+      // 약간의 지연 후 리다이렉트
+      setTimeout(() => {
+        window.location.href = 'index.html';
+      }, 100);
     } else {
       const errorText = await response.text();
       console.error('❌ 서버 응답 오류:', response.status, errorText);
@@ -259,30 +293,4 @@ document.getElementById('submitProfile').addEventListener('click', async () => {
     console.error('❌ 프로필 저장 오류:', error);
     alert('프로필 저장 중 오류가 발생했습니다.');
   }
-});
-
-// 엔터키로 완료
-document.getElementById('nicknameInput').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') {
-    document.getElementById('submitProfile').click();
-  }
-});
-
-// 페이지 로드 시 이미 로그인되어 있는지 확인
-window.addEventListener('DOMContentLoaded', async () => {
-  const token = localStorage.getItem('authToken');
-  if (token) {
-    try {
-      const response = await fetch(`${API_BASE}/auth/verify`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (response.ok) {
-        // 이미 로그인되어 있으면 메인 화면으로
-        window.location.href = 'index.html';
-      }
-    } catch (error) {
-      console.log('토큰 검증 실패');
-    }
-  }
-});
+}

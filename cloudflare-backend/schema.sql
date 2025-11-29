@@ -9,17 +9,18 @@ CREATE TABLE IF NOT EXISTS users (
   custom_nickname TEXT NOT NULL,
   avatar TEXT,
   email TEXT,
-  guild_id INTEGER,
+  guild_id INTEGER, -- ✅ 소속 길드 ID 추가
   role TEXT DEFAULT 'user', -- user, channel_owner, super_admin
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (guild_id) REFERENCES guilds(id) -- ✅ 외래키 추가
 );
 
 -- 길드 테이블
 CREATE TABLE IF NOT EXISTS guilds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  logo TEXT,
+  logo TEXT, -- ✅ Base64 이미지 저장
   faction TEXT NOT NULL, -- 소함대, 무역연합, 해적, 안틸리아, 에스파니올, 카이 & 세베리아
   recruitment TEXT NOT NULL, -- 모집중, 모집 마감
   description TEXT,
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS guilds (
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  logo TEXT,
+  logo TEXT, -- ✅ Base64 이미지 저장
   password TEXT, -- NULL이면 공개 채널
   owner_id TEXT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -67,8 +68,10 @@ CREATE TABLE IF NOT EXISTS messages (
 
 -- 인덱스 생성
 CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id);
+CREATE INDEX IF NOT EXISTS idx_users_guild_id ON users(guild_id); -- ✅ 길드 ID 인덱스 추가
 CREATE INDEX IF NOT EXISTS idx_guilds_owner ON guilds(owner_id);
 CREATE INDEX IF NOT EXISTS idx_channels_owner ON channels(owner_id);
 CREATE INDEX IF NOT EXISTS idx_channel_members_channel ON channel_members(channel_id);
+CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members(user_id); -- ✅ 유저 인덱스 추가
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
