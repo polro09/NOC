@@ -1,0 +1,42 @@
+
+name = "sdt-overlay-api"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Cloudflare 계정 설정
+account_id = "411eaa7c0853019e37c01ab702b606d1"
+workers_dev = true
+
+# 라우트 설정
+routes = [
+  { pattern = "sdt-ad.xyz/*", zone_name = "sdt-ad.xyz" }
+]
+
+# KV Namespace (세션 저장용)
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "a6418b19b4c44aeaa1b3f6568ae4e383"
+
+# D1 Database (데이터 저장용)
+[[d1_databases]]
+binding = "DB"
+database_name = "sdt-overlay-db"
+database_id = "b18d5da6-4778-42e1-9196-1e5b0f353fff"
+
+# Durable Objects (WebSocket용)
+[[durable_objects.bindings]]
+name = "CHAT_ROOMS"
+class_name = "ChatRoom"
+
+# migrations 설정 (Durable Object 등록)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
+
+# 환경 변수
+[vars]
+DISCORD_CLIENT_ID = "1442154611007033344"
+DISCORD_REDIRECT_URI = "https://sdt-ad.xyz/auth/discord/callback"
+
+# Secret 환경 변수 (wrangler secret put 명령으로 설정)
+# wrangler secret put DISCORD_CLIENT_SECRET

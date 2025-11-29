@@ -1,0 +1,387 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+  background: transparent;
+  overflow: hidden;
+}
+
+/* 오버레이 채팅창 - 95% 투명 */
+.chat-overlay {
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(15px);
+  display: flex;
+  flex-direction: column;
+}
+
+/* 헤더 - 투명도 95% + 크기 50% 축소 */
+.chat-header {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  -webkit-app-region: drag;
+}
+
+.chat-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  opacity: 1;
+}
+
+.close-btn {
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+
+.close-btn:hover {
+  background: rgba(231, 76, 60, 0.6);
+}
+
+/* 탭 영역 - 투명도 증가 */
+.tabs {
+  display: flex;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 3px;
+  gap: 3px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tab {
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tab.active {
+  background: rgba(255, 255, 255, 0.12);
+  font-weight: 600;
+}
+
+.tab.add-tab-btn {
+  background: rgba(102, 126, 234, 0.3);
+  font-size: 16px;
+  font-weight: bold;
+  padding: 6px 10px;
+}
+
+.tab.add-tab-btn:hover {
+  background: rgba(102, 126, 234, 0.5);
+}
+
+.user-count {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-left: 4px;
+}
+
+.lock-icon {
+  font-size: 10px;
+}
+
+.tab-close {
+  margin-left: 6px;
+  font-size: 14px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  opacity: 1;
+  color: #ff6b6b;
+}
+
+/* 채팅 영역 */
+.chat-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tab-panel {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tab-panel.active {
+  display: flex;
+}
+
+.messages {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 메시지 - 이름 아래 대화 내용 */
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+}
+
+.message-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 이름과 시간 - 한 줄 */
+.message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.author {
+  font-weight: 600;
+  font-size: 13px;
+  color: white;
+  opacity: 1;
+}
+
+.timestamp {
+  font-size: 10px;
+  color: white;
+  opacity: 0.4;
+}
+
+/* 대화 내용 - 이름 아래, 좌측 정렬 */
+.message-content {
+  font-size: 13px;
+  color: white;
+  opacity: 1;
+  line-height: 1.4;
+  word-wrap: break-word;
+  text-align: left;
+}
+
+/* 입력 영역 - 투명도 95% + 크기 50% 축소 */
+.input-area {
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.05);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.message-input {
+  width: 100%;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  color: white;
+  font-size: 12px;
+  outline: none;
+}
+
+.message-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.message-input:focus {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 스크롤바 */
+.messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabs::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+/* 비밀번호 입력 모달 */
+.password-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.9);
+  padding: 30px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 1000;
+  display: none;
+}
+
+.password-modal.active {
+  display: block;
+}
+
+.modal-title {
+  color: white;
+  font-size: 18px;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.password-input {
+  width: 250px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+  margin-bottom: 15px;
+  outline: none;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.modal-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.modal-btn.confirm {
+  background: rgba(102, 126, 234, 0.8);
+}
+
+.modal-btn.cancel {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 채널 선택 모달 */
+.channel-select-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.95);
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 1000;
+  display: none;
+  min-width: 300px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.channel-select-modal.active {
+  display: block;
+}
+
+.channel-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.channel-select-item {
+  padding: 12px 15px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.channel-select-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.channel-select-item .channel-icon {
+  font-size: 20px;
+}
+
+.channel-select-item .channel-info {
+  flex: 1;
+}
+
+.channel-select-item .channel-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.channel-select-item .channel-count {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+

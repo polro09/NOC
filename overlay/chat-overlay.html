@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>채팅 오버레이</title>
+  <link rel="stylesheet" href="chat-overlay-styles.css">
+</head>
+<body>
+  <div class="chat-overlay">
+    <!-- 헤더 -->
+    <div class="chat-header">
+      <span class="chat-title">여백 - 채팅</span>
+      <button class="close-btn" id="closeBtn">×</button>
+    </div>
+
+    <!-- 탭 영역 -->
+    <div class="tabs" id="tabs">
+      <!-- 탭들이 동적으로 추가됨 -->
+    </div>
+
+    <!-- 채팅 영역 -->
+    <div class="chat-content" id="chatContent">
+      <!-- 탭 패널들이 동적으로 추가됨 -->
+    </div>
+  </div>
+
+  <!-- 비밀번호 입력 모달 -->
+  <div class="password-modal" id="passwordModal">
+    <div class="modal-title">🔒 비밀 채널 입장</div>
+    <input type="password" class="password-input" id="passwordInput" placeholder="비밀번호 입력">
+    <div class="modal-buttons">
+      <button class="modal-btn confirm" id="confirmBtn">확인</button>
+      <button class="modal-btn cancel" id="cancelBtn">취소</button>
+    </div>
+  </div>
+
+  <!-- 채널 추가 모달 -->
+  <div class="channel-select-modal" id="channelSelectModal">
+    <div class="modal-title">채널 선택</div>
+    <div class="channel-select-list" id="channelSelectList">
+      <!-- 채널 목록이 동적으로 추가됨 -->
+    </div>
+  </div>
+
+  <script src="chat-overlay.js"></script>
+</body>
+</html>

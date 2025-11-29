@@ -1,0 +1,24 @@
+{
+  "name": "game-overlay-chat",
+  "version": "1.0.0",
+  "description": "SDT 게임 오버레이 채팅 앱",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "keywords": [
+    "electron",
+    "overlay",
+    "chat",
+    "gaming"
+  ],
+  "author": "SDT Team",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}

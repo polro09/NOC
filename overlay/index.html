@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SDT 오버레이</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="main-page">
+  <!-- 즉시 실행: localStorage 체크 -->
+  <script>
+    (function() {
+      const userData = localStorage.getItem('userData');
+      if (!userData) {
+        console.error('❌❌❌ 사용자 데이터 없음 - 즉시 리다이렉트');
+        window.location.href = 'login.html';
+        // JavaScript 실행 중단
+        throw new Error('Redirecting to login');
+      }
+      
+      try {
+        const user = JSON.parse(userData);
+        if (!user.discordId || !user.discordUsername) {
+          console.error('❌❌❌ 사용자 데이터 불완전 - 즉시 리다이렉트');
+          localStorage.removeItem('userData');
+          window.location.href = 'login.html';
+          throw new Error('Redirecting to login');
+        }
+        console.log('✅✅✅ 사용자 데이터 검증 완료 - 페이지 로드 계속');
+      } catch (e) {
+        if (e.message !== 'Redirecting to login') {
+          console.error('❌❌❌ userData 파싱 오류 - 즉시 리다이렉트');
+          localStorage.removeItem('userData');
+          window.location.href = 'login.html';
+          throw new Error('Redirecting to login');
+        }
+      }
+    })();
+  </script>
+  
+  <div class="overlay-container">
+    <!-- 상단 헤더 (드래그 가능 영역) -->
+    <div class="header" id="header">
+      <span class="title">여백</span>
+      <div class="header-controls">
+        <button class="header-btn close" id="closeBtn" title="닫기">×</button>
+      </div>
+    </div>
+
+    <div class="content-wrapper">
+      <!-- 왼쪽 사이드바 -->
+      <div class="sidebar">
+        <!-- 사용자 프로필 -->
+        <div class="user-profile" id="userProfile">
+          <div class="profile-avatar">
+            <img src="../assets/logo.png" alt="Profile" id="profileAvatar">
+          </div>
+          <div class="profile-info">
+            <div class="profile-name" id="profileName">사용자</div>
+            <div class="profile-status" id="profileStatus">온라인</div>
+          </div>
+          <button class="profile-expand-btn" id="profileExpandBtn">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M7 10l5 5 5-5z"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 길드 리스트 -->
+        <div class="list-section">
+          <div class="list-header">
+            <h3>길드 리스트</h3>
+            <button class="add-btn" id="addGuildBtn" title="길드 등록">+</button>
+          </div>
+          <div class="guild-list" id="guildList">
+            <!-- 길드 아이템들이 동적으로 추가됨 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 오른쪽 메인 콘텐츠 -->
+      <div class="main-content">
+        <!-- 환영 메시지 -->
+        <div class="welcome-section">
+          <div class="welcome-content">
+            <h1>🎮 여백 채팅에 오신 것을 환영합니다</h1>
+            <p>왼쪽에서 채널을 선택하면 오버레이 채팅창이 열립니다</p>
+            <button class="join-general-chat-btn" id="joinGeneralChatBtn">
+              💬 일반 채팅 참여하기
+            </button>
+          </div>
+        </div>
+
+        <!-- 채널 리스트 -->
+        <div class="channel-section">
+          <div class="list-header">
+            <h3>채널 리스트</h3>
+            <button class="add-btn" id="addChannelBtn" title="채널 등록">+</button>
+          </div>
+          <div class="channel-list" id="channelList">
+            <!-- 채널 아이템들이 동적으로 추가됨 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 사용자 프로필 상세 모달 -->
+  <div class="modal" id="profileModal" style="display: none;">
+    <div class="modal-content profile-detail">
+      <div class="modal-header">
+        <h2>사용자 프로필</h2>
+        <button class="modal-close" id="closeProfileModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="profile-detail-avatar">
+          <img src="../assets/logo.png" alt="Profile" id="profileDetailAvatar">
+        </div>
+        <div class="profile-detail-info">
+          <div class="form-group">
+            <label>디스코드 사용자 ID</label>
+            <input type="text" id="discordId" readonly>
+          </div>
+          <div class="form-group">
+            <label>디스코드 별명</label>
+            <div class="input-with-btn">
+              <input type="text" id="discordNickname" readonly>
+              <button class="secondary-btn" id="editDiscordBtn">수정버튼</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>소속 길드</label>
+            <div class="input-with-btn">
+              <input type="text" id="userGuild" readonly>
+              <button class="secondary-btn" id="editGuildBtn">수정버튼</button>
+            </div>
+          </div>
+        </div>
+        <button class="logout-btn" id="logoutBtn">로그아웃</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 길드 등록 모달 -->
+  <div class="modal" id="addGuildModal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>길드 게시판 등록</h2>
+        <button class="modal-close" id="closeGuildModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>길드 로고</label>
+          <input type="file" id="guildLogo" accept="image/*">
+        </div>
+        <div class="form-group">
+          <label>길드 명</label>
+          <input type="text" id="guildName" placeholder="길드 이름을 입력하세요">
+        </div>
+        <div class="form-group">
+          <label>길드 진영</label>
+          <select id="guildFaction">
+            <option value="">진영을 선택하세요</option>
+            <option value="소함대">소함대</option>
+            <option value="무역연합">무역연합</option>
+            <option value="해적">해적</option>
+            <option value="안틸리아">안틸리아</option>
+            <option value="에스파니올">에스파니올</option>
+            <option value="카이 & 세베리아">카이 & 세베리아</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>모집 상태</label>
+          <select id="guildRecruitment">
+            <option value="모집중">모집중</option>
+            <option value="모집 마감">모집 마감</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>길드 설명</label>
+          <textarea id="guildDescription" rows="4" placeholder="길드 소개를 입력하세요"></textarea>
+        </div>
+        <div class="form-group">
+          <label>연락처 (디스코드)</label>
+          <input type="text" id="guildContact" placeholder="디스코드 ID 또는 서버 링크">
+        </div>
+        <button class="submit-btn" id="submitGuild">등록</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 채널 등록 모달 -->
+  <div class="modal" id="addChannelModal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>채팅 채널 등록</h2>
+        <button class="modal-close" id="closeChannelModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>채널 로고</label>
+          <input type="file" id="channelLogo" accept="image/*">
+        </div>
+        <div class="form-group">
+          <label>채널명</label>
+          <input type="text" id="channelName" placeholder="채널 이름을 입력하세요">
+        </div>
+        <div class="form-group">
+          <label>비밀번호 (선택)</label>
+          <input type="password" id="channelPassword" placeholder="비밀번호를 설정하지 않으면 공개 채널입니다">
+        </div>
+        <button class="submit-btn" id="submitChannel">등록</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="overlay.js"></script>
+</body>
+</html>
