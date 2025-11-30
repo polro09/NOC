@@ -330,9 +330,9 @@ body {
   overflow: hidden;
 }
 
-/* 사이드바 */
+/* 사이드바 - 50% 크기 증가 */
 .sidebar {
-  width: 250px;
+  width: 450px;
   background: #f8f9fa;
   border-right: 1px solid #e0e0e0;
   display: flex;
@@ -460,7 +460,7 @@ body {
   cursor: pointer;
   transition: all 0.3s;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   position: relative;
   border: 1px solid rgba(102, 126, 234, 0.15);
@@ -484,8 +484,8 @@ body {
 
 .guild-icon,
 .channel-icon {
-  width: 36px;
-  height: 36px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.3) 100%);
   display: flex;
@@ -508,22 +508,34 @@ body {
 .channel-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
+/* 길드 약어 (첫 번째 줄) */
+.guild-short-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #667eea;
+  white-space: nowrap;
+}
+
+/* 길드 이름 (두 번째 줄) */
 .guild-name,
 .channel-name {
   font-size: 14px;
   font-weight: 600;
   color: #333;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
+/* 길드 진영 (세 번째 줄) */
 .guild-faction {
-  font-size: 12px;
+  font-size: 11px;
   color: #888;
+  white-space: nowrap;
 }
 
 .channel-lock {
@@ -587,19 +599,23 @@ body {
 }
 
 /* ===================================
-   배경 섹션 - 40% (30%에서 변경)
+   배경 섹션 - 40% (수정됨: 이미지 비율 유지)
    =================================== */
 .background-section {
   flex: 0 0 40%;
   display: flex;
   align-items: center;
   justify-content: center;
+  background-color: #f8f9fa;
   background-image: url('../assets/logo.jpg');
-  background-size: cover;
-  background-position: center top;  /* center → center top 으로 변경하여 상단 우선 표시 */
+  /* ✅ 수정: contain으로 변경하여 이미지 비율 유지, 잘리지 않음 */
+  background-size: contain;
+  background-position: center center;
   background-repeat: no-repeat;
   position: relative;
   overflow: hidden;
+  /* ✅ 최소/최대 높이 설정으로 극단적인 크기 변화 방지 */
+  min-height: 150px;
 }
 
 /* 배경 오버레이 */
@@ -615,7 +631,7 @@ body {
 }
 
 /* ===================================
-   채널 섹션 - 60% (70%에서 변경)
+   채널 섹션 - 60%
    =================================== */
 .channel-section {
   flex: 0 0 60%;
@@ -794,9 +810,15 @@ body {
   border-radius: 15px;
   width: 90%;
   max-width: 500px;
-  max-height: 80vh;
+  max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* 프로필 모달은 스크롤바 없이 */
+.profile-detail.modal-content {
+  max-height: none;
+  overflow: visible;
 }
 
 .modal-header {
@@ -833,9 +855,85 @@ body {
   padding: 20px;
 }
 
-/* 프로필 상세 모달 */
+/* 프로필 상세 모달 - 스크롤바 제거 */
 .profile-detail {
   max-width: 450px;
+  max-height: none;
+  overflow: visible;
+}
+
+.profile-detail .modal-body {
+  padding: 20px;
+  overflow: visible;
+}
+
+/* 길드 상세 모달 */
+.guild-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 25px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #eee;
+}
+
+.guild-detail-logo {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.3) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  flex-shrink: 0;
+  border: 3px solid rgba(102, 126, 234, 0.4);
+  overflow: hidden;
+}
+
+.guild-detail-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.guild-detail-names {
+  flex: 1;
+}
+
+.guild-detail-short {
+  font-size: 24px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.guild-detail-full {
+  font-size: 16px;
+  font-weight: 500;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+.guild-detail-faction {
+  font-size: 14px;
+  color: #667eea;
+  font-weight: 600;
+}
+
+.guild-detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.guild-detail-value {
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  color: #333;
+  font-size: 14px;
+  min-height: 40px;
 }
 
 .profile-detail-avatar {
@@ -858,15 +956,22 @@ body {
 .input-with-btn {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .input-with-btn input {
   flex: 1;
 }
 
+.input-with-btn .secondary-btn {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
 .secondary-btn {
   padding: 12px 20px;
-  background: rgba(100, 100, 120, 0.5);
+  background: #667eea;
   color: white;
   border: none;
   border-radius: 8px;
@@ -874,10 +979,11 @@ body {
   cursor: pointer;
   transition: background 0.3s;
   white-space: nowrap;
+  pointer-events: auto;
 }
 
 .secondary-btn:hover {
-  background: rgba(100, 100, 120, 0.7);
+  background: #5568d3;
 }
 
 .logout-btn {
@@ -1024,7 +1130,7 @@ body {
 /* 반응형 조정 */
 @media (max-width: 800px) {
   .sidebar {
-    width: 200px;
+    width: 240px;
   }
   
   .background-section {

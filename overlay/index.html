@@ -5,13 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SDT 오버레이</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="styles-final.css">
 </head>
 <body class="main-page">
   <div class="overlay-container">
     <!-- 상단 헤더 (드래그 가능 영역) -->
     <div class="header" id="header">
-      <span class="title">여백</span>
+      <span class="title">WOSB</span>
       <div class="header-controls">
         <button class="header-btn close" id="closeBtn" title="닫기">×</button>
       </div>
@@ -86,17 +85,17 @@
             <input type="text" id="discordId" readonly>
           </div>
           <div class="form-group">
-            <label>디스코드 별명</label>
+            <label>사용자 닉네임</label>
             <div class="input-with-btn">
               <input type="text" id="discordNickname" readonly>
-              <button class="secondary-btn" id="editDiscordBtn">수정</button>
+              <button class="secondary-btn" id="editDiscordBtn">변경</button>
             </div>
           </div>
           <div class="form-group">
             <label>소속 길드</label>
             <div class="input-with-btn">
               <input type="text" id="userGuild" readonly>
-              <button class="secondary-btn" id="editGuildBtn">수정</button>
+              <button class="secondary-btn" id="editGuildBtn">변경</button>
             </div>
           </div>
         </div>
@@ -117,10 +116,17 @@
         <div class="form-group">
           <label>길드 로고</label>
           <input type="file" id="guildLogo" accept="image/*">
+          <div class="logo-preview" id="guildLogoPreview" style="display: none;">
+            <img id="guildLogoPreviewImg" src="" alt="로고 미리보기">
+          </div>
         </div>
         <div class="form-group">
-          <label>길드 명</label>
-          <input type="text" id="guildName" placeholder="길드 이름을 입력하세요">
+          <label>길드 약어</label>
+          <input type="text" id="guildShortName" placeholder="길드 약어를 입력하세요 (예: SDT)">
+        </div>
+        <div class="form-group">
+          <label>길드 이름</label>
+          <input type="text" id="guildName" placeholder="길드 전체 이름을 입력하세요">
         </div>
         <div class="form-group">
           <label>길드 진영</label>
@@ -166,6 +172,9 @@
         <div class="form-group">
           <label>채널 로고</label>
           <input type="file" id="channelLogo" accept="image/*">
+          <div class="logo-preview" id="channelLogoPreview" style="display: none;">
+            <img id="channelLogoPreviewImg" src="" alt="로고 미리보기">
+          </div>
         </div>
         <div class="form-group">
           <label>채널명</label>
@@ -192,6 +201,42 @@
         <div class="modal-buttons">
           <button class="delete-btn" id="confirmDelete">삭제</button>
           <button class="cancel-btn" id="cancelDelete">취소</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 길드 상세 모달 -->
+  <div class="modal" id="guildDetailModal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>길드 정보</h2>
+        <button class="modal-close" id="closeGuildDetailModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="guild-detail-header">
+          <div class="guild-detail-logo" id="guildDetailLogo">
+            <!-- 로고 이미지 -->
+          </div>
+          <div class="guild-detail-names">
+            <div class="guild-detail-short" id="guildDetailShort">SDT</div>
+            <div class="guild-detail-full" id="guildDetailFull">길드 전체 이름</div>
+            <div class="guild-detail-faction" id="guildDetailFaction">진영</div>
+          </div>
+        </div>
+        <div class="guild-detail-info">
+          <div class="form-group">
+            <label>모집 상태</label>
+            <div class="guild-detail-value" id="guildDetailRecruitment">모집중</div>
+          </div>
+          <div class="form-group">
+            <label>길드 설명</label>
+            <div class="guild-detail-value" id="guildDetailDescription">-</div>
+          </div>
+          <div class="form-group">
+            <label>연락처 (디스코드)</label>
+            <div class="guild-detail-value" id="guildDetailContact">-</div>
+          </div>
         </div>
       </div>
     </div>

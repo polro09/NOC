@@ -243,8 +243,9 @@ function connectToChannel(channelData) {
   }
   
   try {
-    // WebSocket URL 생성
-    const wsUrl = `${API_BASE.replace('https:', 'wss:').replace('http:', 'ws:')}/ws/channel/${channelData.id}`;
+    // WebSocket URL 생성 (/api 제거)
+    const wsBaseUrl = API_BASE.replace('/api', '').replace('https:', 'wss:').replace('http:', 'ws:');
+    const wsUrl = `${wsBaseUrl}/ws/channel/${channelData.id}`;
     console.log('🔗 WebSocket URL:', wsUrl);
     
     ws = new WebSocket(wsUrl);
@@ -370,6 +371,12 @@ function addMessage(channelId, messageData) {
 function sendMessage(channelId, content) {
   console.log('📤 메시지 전송:', channelId, content);
   
+  // ✅ 최신 사용자 데이터 로드 (소속 길드 변경 반영)
+  const userData = localStorage.getItem('userData');
+  if (userData) {
+    currentUser = JSON.parse(userData);
+  }
+  
   if (!currentUser) {
     console.error('❌ 사용자 정보 없음');
     return;
@@ -388,6 +395,8 @@ function sendMessage(channelId, content) {
     content: content,
     timestamp: new Date()
   };
+  
+  console.log('📤 메시지 데이터:', messageData);
   
   // WebSocket으로 전송
   if (ws && ws.readyState === WebSocket.OPEN) {
