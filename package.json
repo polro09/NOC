@@ -1,22 +1,69 @@
 {
-  "name": "game-overlay-chat",
+  "name": "wosb-overlay",
   "version": "1.0.0",
-  "description": "SDT 게임 오버레이 채팅 앱",
+  "description": "WOSB - World of Sea Battle 게임 오버레이 채팅",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev"
+    "dev": "electron . --dev",
+    "build": "electron-builder --win",
+    "build:portable": "electron-builder --win portable",
+    "build:all": "electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.sdt.wosb",
+    "productName": "WOSB",
+    "copyright": "Copyright © 2024 SDT Team",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "config.js",
+      "overlay/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WOSB"
+    },
+    "portable": {
+      "artifactName": "WOSB-Portable-${version}.${ext}"
+    }
   },
   "keywords": [
     "electron",
     "overlay",
     "chat",
-    "gaming"
+    "gaming",
+    "world-of-sea-battle"
   ],
   "author": "SDT Team",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^28.0.0"
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
   },
   "dependencies": {
     "ws": "^8.14.2"

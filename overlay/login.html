@@ -5,6 +5,108 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SDT 오버레이 - 로그인</title>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    /* 로그인 페이지 전용 스타일 */
+    .login-container {
+      padding: 25px 40px;
+      overflow-y: auto;
+      max-height: calc(100vh - 50px);
+    }
+    
+    /* 로고 직사각형으로 변경 */
+    .app-logo {
+      width: 200px;
+      height: 120px;
+      border-radius: 12px;
+      object-fit: cover;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+    
+    .logo-section {
+      margin-bottom: 15px;
+    }
+    
+    /* 설명 영역 축소 */
+    .app-description {
+      margin-bottom: 20px;
+    }
+    
+    .app-description h2 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+    
+    .app-description p {
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    
+    .feature-list li {
+      font-size: 12px;
+      padding: 3px 0;
+    }
+    
+    .login-box {
+      margin-bottom: 20px;
+    }
+    
+    /* 프로필 설정 섹션 */
+    .profile-settings-section {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 2px solid #eee;
+    }
+    
+    .profile-settings-section .section-title {
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+    
+    .profile-settings-section .form-group {
+      margin-bottom: 15px;
+    }
+    
+    .profile-settings-section .form-group input {
+      padding: 10px;
+    }
+    
+    .profile-settings-section .submit-btn {
+      padding: 10px;
+      font-size: 14px;
+    }
+    
+    /* 프로필 설정 모드일 때 상단 영역 숨기기 */
+    .login-container.profile-mode .app-description,
+    .login-container.profile-mode .logo-section {
+      display: none;
+    }
+    
+    .login-container.profile-mode {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: calc(100vh - 100px);
+    }
+    
+    /* 프로필 설정 시 더 넓은 공간 */
+    .login-container.profile-mode .profile-settings-section {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+    
+    .login-container.profile-mode .profile-settings-section .section-title {
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+    
+    /* 성공 아이콘 */
+    .success-icon {
+      font-size: 60px;
+      margin-bottom: 20px;
+      color: #10b981;
+    }
+  </style>
 </head>
 <body class="login-page">
   <div class="login-window">
@@ -14,16 +116,14 @@
       <button class="login-close-btn" id="loginCloseBtn">×</button>
     </div>
 
-    <div class="login-container">
+    <div class="login-container" id="loginContainer">
       <!-- 프로그램 설명 -->
       <div class="app-description">
-        <h2>게임 오버레이 채팅</h2>
+        <h2>오버레이 채팅</h2>
         <p>게임 화면 위에 표시되는 반투명 채팅 프로그램입니다.</p>
         <ul class="feature-list">
           <li>🎮 게임 중 실시간 채팅</li>
-          <li>👥 길드 및 채널 관리</li>
           <li>💬 Discord 계정으로 간편 로그인</li>
-          <li>🔒 비밀번호로 보호되는 비공개 채널</li>
         </ul>
       </div>
 
@@ -46,7 +146,7 @@
         <button id="clearStorageBtn" style="
           background: none;
           border: none;
-          color: rgba(255, 255, 255, 0.3);
+          color: #999;
           font-size: 11px;
           cursor: pointer;
           padding: 5px 10px;
@@ -55,12 +155,19 @@
       </div>
 
       <div class="profile-settings-section" id="profileSettings" style="display: none;">
-        <h3 class="section-title">프로필 설정</h3>
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="../assets/welcome.gif" alt="환영" style="width: 120px; height: auto;">
+        </div>
+        <h3 class="section-title" style="text-align: center;">환영합니다!</h3>
+        <p style="text-align: center; color: #666; font-size: 13px; margin-bottom: 20px;">
+          채팅에서 사용할 닉네임을 설정해주세요.<br>
+          나중에 언제든 변경할 수 있습니다.
+        </p>
         <div class="form-group">
           <label>닉네임</label>
           <input type="text" id="nicknameInput" placeholder="사용할 닉네임을 입력하세요">
         </div>
-        <button class="submit-btn" id="submitProfile">완료</button>
+        <button class="submit-btn" id="submitProfile">시작하기</button>
       </div>
     </div>
   </div>

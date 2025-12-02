@@ -17,7 +17,7 @@ function createWindow() {
     frame: false,
     alwaysOnTop: false,
     skipTaskbar: false,
-    resizable: true, // 크기 조절 가능하도록 변경
+    resizable: true,
     backgroundColor: '#ffffff',
     webPreferences: {
       nodeIntegration: true,
@@ -30,15 +30,10 @@ function createWindow() {
 
   mainWindow.loadFile('overlay/login.html');
   
-  // 위치 강제 이동 코드 완전 제거
-  // 사용자가 원하는 위치에 자유롭게 배치 가능
-  
-  // 개발 중에만 개발자 도구 열기
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
   
-  // 보안 경고 무시 (개발 환경)
   mainWindow.webContents.on('console-message', (event, level, message) => {
     if (message.includes('Electron Security Warning')) {
       event.preventDefault();
@@ -89,24 +84,32 @@ ipcMain.on('open-chat-overlay', (event, channelData) => {
     
     chatOverlayWindow.loadFile('overlay/chat-overlay.html');
     
+    // ✅ 항상 최상단 유지 강제
+    chatOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+    
+    // ✅ 포커스 잃어도 최상단 유지
+    chatOverlayWindow.on('blur', () => {
+      if (chatOverlayWindow && !chatOverlayWindow.isDestroyed()) {
+        chatOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+      }
+    });
+    
     chatOverlayWindow.on('closed', () => {
       chatOverlayWindow = null;
     });
     
-    // 창이 로드되면 채널 데이터 전송
     chatOverlayWindow.webContents.on('did-finish-load', () => {
       chatOverlayWindow.webContents.send('load-channel', channelData);
     });
     
-    // 보안 경고 무시 (개발 환경)
     chatOverlayWindow.webContents.on('console-message', (event, level, message) => {
       if (message.includes('Electron Security Warning')) {
         event.preventDefault();
       }
     });
   } else {
-    // 이미 열려있으면 채널 추가
     chatOverlayWindow.webContents.send('load-channel', channelData);
+    chatOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
     chatOverlayWindow.focus();
   }
 });
@@ -115,6 +118,13 @@ ipcMain.on('open-chat-overlay', (event, channelData) => {
 ipcMain.on('close-chat-overlay', () => {
   if (chatOverlayWindow) {
     chatOverlayWindow.close();
+  }
+});
+
+// ✅ 채널 인원수 업데이트 (채팅창 → 메인창)
+ipcMain.on('update-channel-member-count', (event, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('channel-member-count-updated', data);
   }
 });
 
@@ -132,5 +142,4 @@ app.on('activate', () => {
   }
 });
 
-// 보안 경고 무시 설정
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';

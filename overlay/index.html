@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SDT 오버레이</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="modal-styles.css">
 </head>
 <body class="main-page">
   <div class="overlay-container">
@@ -49,9 +50,8 @@
 
       <!-- 오른쪽 메인 콘텐츠 -->
       <div class="main-content">
-        <!-- 상단 40%: 배경 이미지 (버튼 제거) -->
+        <!-- 상단 40%: 배경 이미지 -->
         <div class="background-section">
-          <!-- 버튼 제거됨 -->
         </div>
 
         <!-- 하단 60%: 채널 리스트 -->
@@ -104,6 +104,48 @@
     </div>
   </div>
 
+  <!-- ✅ 닉네임 변경 커스텀 모달 -->
+  <div class="modal" id="nicknameModal" style="display: none;">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h2>닉네임 변경</h2>
+        <button class="modal-close" id="closeNicknameModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>새로운 닉네임을 입력하세요</label>
+          <input type="text" id="newNicknameInput" placeholder="닉네임 입력" maxlength="20">
+        </div>
+        <div class="modal-buttons">
+          <button class="submit-btn" id="confirmNicknameBtn">확인</button>
+          <button class="cancel-btn" id="cancelNicknameBtn">취소</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✅ 길드 선택 커스텀 모달 -->
+  <div class="modal" id="guildSelectModal" style="display: none;">
+    <div class="modal-content" style="max-width: 450px;">
+      <div class="modal-header">
+        <h2>소속 길드 변경</h2>
+        <button class="modal-close" id="closeGuildSelectModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>소속 길드를 선택하세요</label>
+          <div class="guild-select-list" id="guildSelectList">
+            <!-- 길드 목록이 동적으로 추가됨 -->
+          </div>
+        </div>
+        <div class="modal-buttons">
+          <button class="submit-btn" id="confirmGuildSelectBtn">확인</button>
+          <button class="cancel-btn" id="cancelGuildSelectBtn">취소</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 길드 등록/수정 모달 -->
   <div class="modal" id="addGuildModal" style="display: none;">
     <div class="modal-content">
@@ -122,7 +164,11 @@
         </div>
         <div class="form-group">
           <label>길드 약어</label>
-          <input type="text" id="guildShortName" placeholder="길드 약어를 입력하세요 (예: SDT)">
+          <div class="input-with-color">
+            <input type="text" id="guildShortName" placeholder="길드 약어를 입력하세요 (예: SDT)">
+            <input type="color" id="guildShortNameColor" value="#667eea" title="약어 색상 선택">
+          </div>
+          <small style="color: #888; font-size: 11px;">약어 색상은 길드 리스트와 채팅에서 표시됩니다.</small>
         </div>
         <div class="form-group">
           <label>길드 이름</label>

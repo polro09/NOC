@@ -1,6 +1,9 @@
 // Cloudflare Workers - 통합 서버
 // Discord OAuth + REST API + WebSocket Chat
 
+// ✅ 총 관리자 ID
+const SUPER_ADMIN_ID = '257097077782216704';
+
 // ============================================
 // ChatRoom Durable Object (WebSocket 채팅)
 // ============================================
@@ -9,7 +12,7 @@ export class ChatRoom {
     this.state = state;
     this.env = env;
     this.sessions = new Map(); // { userId: session }
-    this.channelMembers = new Map(); // { channelId: Set(userIds) }
+    this.channelMembers = new Map(); // { channelId: Map(userId -> userInfo) }
   }
   
   async fetch(request) {
@@ -33,10 +36,16 @@ export class ChatRoom {
     const session = {
       webSocket: server,
       userId: null,
+      sessionId: null,
       channelId: null,
       nickname: null,
+      avatar: null,
       guild: null,
-      nicknameColor: '#ffffff'
+      guildColor: '#667eea',
+      nicknameColor: '#ffffff',
+      role: 'user',
+      isMuted: false,
+      warnings: 0
     };
     
     server.accept();
@@ -51,25 +60,11 @@ export class ChatRoom {
     });
     
     server.addEventListener('close', () => {
-      this.sessions.delete(session.userId);
-      
-      if (session.channelId) {
-        // 채널 멤버에서 제거
-        const members = this.channelMembers.get(session.channelId);
-        if (members) {
-          members.delete(session.userId);
-        }
-        
-        // 퇴장 알림
-        this.broadcast(session.channelId, {
-          type: 'user_left',
-          userId: session.userId,
-          nickname: session.nickname
-        }, session.userId);
-        
-        // 인원수 브로드캐스트
-        this.broadcastMemberCount(session.channelId);
-      }
+      this.handleDisconnect(session);
+    });
+    
+    server.addEventListener('error', () => {
+      this.handleDisconnect(session);
     });
     
     return new Response(null, {
@@ -78,150 +73,426 @@ export class ChatRoom {
     });
   }
   
+  // ✅ 연결 해제 처리
+  handleDisconnect(session) {
+    if (session.sessionId) {
+      this.sessions.delete(session.sessionId);
+    }
+    
+    if (session.channelId && session.userId) {
+      const members = this.channelMembers.get(session.channelId);
+      if (members) {
+        members.delete(session.userId);
+        
+        // 퇴장 알림 브로드캐스트
+        this.broadcast(session.channelId, {
+          type: 'user_left',
+          userId: session.userId,
+          nickname: session.nickname
+        }, session.userId);
+        
+        // ✅ 인원수 브로드캐스트
+        this.broadcastMemberCount(session.channelId);
+      }
+    }
+  }
+  
   async handleMessage(session, data) {
     switch (data.type) {
-      case 'auth':
-        await this.handleAuth(session, data);
-        break;
-      case 'join_channel':
-        await this.handleJoinChannel(session, data);
+      case 'join':
+        await this.handleJoin(session, data);
         break;
       case 'message':
         await this.handleChatMessage(session, data);
         break;
-      case 'leave_channel':
-        await this.handleLeaveChannel(session, data);
+      case 'leave':
+        await this.handleLeave(session, data);
+        break;
+      case 'admin_action':
+        await this.handleAdminAction(session, data);
         break;
     }
   }
   
-  async handleAuth(session, data) {
-    const sessionData = await this.env.SESSIONS.get(data.token);
+  // ✅ 채널 입장
+  async handleJoin(session, data) {
+    const { channelId, user } = data;
     
-    if (!sessionData) {
-      session.webSocket.send(JSON.stringify({
-        type: 'error',
-        message: 'Invalid token'
-      }));
-      session.webSocket.close();
+    if (!user || !user.discordId) {
+      session.webSocket.send(JSON.stringify({ type: 'error', message: 'Invalid user data' }));
       return;
     }
     
-    const userData = JSON.parse(sessionData);
-    session.userId = userData.discordId;
-    session.nickname = userData.customNickname;
-    session.guild = userData.guild || '없음';
-    
-    this.sessions.set(session.userId, session);
-    
-    session.webSocket.send(JSON.stringify({
-      type: 'auth_success',
-      userId: session.userId
-    }));
-  }
-  
-  async handleJoinChannel(session, data) {
-    session.channelId = data.channelId;
-    
-    // 채널 멤버 추가
-    if (!this.channelMembers.has(data.channelId)) {
-      this.channelMembers.set(data.channelId, new Set());
+    // 입장금지 확인
+    try {
+      const ban = await this.env.DB.prepare(`
+        SELECT * FROM channel_bans WHERE channel_id = ? AND user_id = ?
+      `).bind(channelId, user.discordId).first();
+      
+      if (ban) {
+        session.webSocket.send(JSON.stringify({ 
+          type: 'banned', 
+          message: '입장금지된 채널입니다.',
+          reason: ban.reason
+        }));
+        session.webSocket.close();
+        return;
+      }
+    } catch (e) {
+      // 테이블이 없을 수 있음, 무시
     }
-    this.channelMembers.get(data.channelId).add(session.userId);
     
-    // DB에 멤버 추가
-    await this.env.DB.prepare(`
-      INSERT OR IGNORE INTO channel_members (channel_id, user_id)
-      VALUES (?, ?)
-    `).bind(data.channelId, session.userId).run();
+    // 세션 설정
+    session.userId = user.discordId;
+    session.sessionId = `${channelId}-${user.discordId}`;
+    session.channelId = channelId;
+    session.nickname = user.nickname || 'Unknown';
+    session.avatar = user.avatar || null;
+    session.guild = user.guild || '없음';
+    session.guildColor = user.guildColor || '#667eea';
+    session.isSuperAdmin = user.discordId === SUPER_ADMIN_ID;
     
-    // 입장 알림
-    this.broadcast(session.channelId, {
-      type: 'user_joined',
-      userId: session.userId,
+    // 채널 멤버 정보 가져오기
+    try {
+      const memberInfo = await this.env.DB.prepare(`
+        SELECT role, nickname_color, warnings, is_muted 
+        FROM channel_members 
+        WHERE channel_id = ? AND user_id = ?
+      `).bind(channelId, user.discordId).first();
+      
+      if (memberInfo) {
+        session.role = memberInfo.role || 'user';
+        session.nicknameColor = memberInfo.nickname_color || '#ffffff';
+        session.warnings = memberInfo.warnings || 0;
+        session.isMuted = memberInfo.is_muted === 1;
+      }
+    } catch (e) {
+      // 무시
+    }
+    
+    // 채널 소유자 확인
+    try {
+      const channel = await this.env.DB.prepare(`
+        SELECT owner_id FROM channels WHERE id = ?
+      `).bind(channelId).first();
+      
+      if (channel && channel.owner_id === user.discordId) {
+        session.role = 'owner';
+      }
+    } catch (e) {
+      // 무시
+    }
+    
+    // 세션 저장
+    this.sessions.set(session.sessionId, session);
+    
+    // 채널 멤버 맵에 추가
+    if (!this.channelMembers.has(channelId)) {
+      this.channelMembers.set(channelId, new Map());
+    }
+    
+    this.channelMembers.get(channelId).set(user.discordId, {
+      discordId: user.discordId,
       nickname: session.nickname,
-      guild: session.guild
-    }, session.userId);
+      guild: session.guild,
+      guildColor: session.guildColor,
+      nicknameColor: session.nicknameColor,
+      role: session.role,
+      isMuted: session.isMuted,
+      warnings: session.warnings,
+      isSuperAdmin: session.isSuperAdmin
+    });
     
-    // 인원수 브로드캐스트
-    this.broadcastMemberCount(session.channelId);
+    // DB에 멤버 추가/업데이트
+    try {
+      await this.env.DB.prepare(`
+        INSERT INTO channel_members (channel_id, user_id, role, nickname_color)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(channel_id, user_id) DO UPDATE SET
+          nickname_color = COALESCE(channel_members.nickname_color, excluded.nickname_color)
+      `).bind(channelId, user.discordId, session.role, session.nicknameColor).run();
+    } catch (e) {
+      // 무시
+    }
+    
+    // 입장 알림 브로드캐스트
+    this.broadcast(channelId, {
+      type: 'user_joined',
+      user: {
+        discordId: user.discordId,
+        nickname: session.nickname,
+        guild: session.guild,
+        guildColor: session.guildColor,
+        role: session.role
+      }
+    }, user.discordId);
+    
+    // ✅ 인원수 브로드캐스트
+    this.broadcastMemberCount(channelId);
+    
+    // 참여자 목록 전송
+    const membersList = Array.from(this.channelMembers.get(channelId).values());
+    session.webSocket.send(JSON.stringify({
+      type: 'members_list',
+      members: membersList
+    }));
     
     // 최근 메시지 전송
-    const { results } = await this.env.DB.prepare(`
-      SELECT m.*, u.custom_nickname, u.guild_id, cm.nickname_color, g.name as guild_name
-      FROM messages m
-      JOIN users u ON m.user_id = u.discord_id
-      LEFT JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.user_id = m.user_id
-      LEFT JOIN guilds g ON u.guild_id = g.id
-      WHERE m.channel_id = ?
-      ORDER BY m.created_at DESC
-      LIMIT 50
-    `).bind(data.channelId).all();
-    
-    session.webSocket.send(JSON.stringify({
-      type: 'message_history',
-      messages: results.reverse()
-    }));
+    try {
+      const { results } = await this.env.DB.prepare(`
+        SELECT m.*, u.custom_nickname, g.short_name, g.short_name_color
+        FROM messages m
+        LEFT JOIN users u ON m.user_id = u.discord_id
+        LEFT JOIN guilds g ON u.guild_id = g.id
+        WHERE m.channel_id = ?
+        ORDER BY m.created_at DESC
+        LIMIT 50
+      `).bind(channelId).all();
+      
+      session.webSocket.send(JSON.stringify({
+        type: 'message_history',
+        messages: results.reverse()
+      }));
+    } catch (e) {
+      // 무시
+    }
   }
   
+  // ✅ 채팅 메시지 처리
   async handleChatMessage(session, data) {
-    if (!session.channelId || !session.userId) {
+    if (!session.channelId || !session.userId) return;
+    
+    // 뮤트 확인
+    if (session.isMuted) {
+      session.webSocket.send(JSON.stringify({
+        type: 'error',
+        message: '채팅 금지 상태입니다.'
+      }));
       return;
     }
     
     // 메시지 저장
-    await this.env.DB.prepare(`
-      INSERT INTO messages (channel_id, user_id, content)
-      VALUES (?, ?, ?)
-    `).bind(session.channelId, session.userId, data.content).run();
+    try {
+      await this.env.DB.prepare(`
+        INSERT INTO messages (channel_id, user_id, content, message_type)
+        VALUES (?, ?, ?, 'chat')
+      `).bind(session.channelId, session.userId, data.content).run();
+    } catch (e) {
+      // 무시
+    }
     
-    // 닉네임 색상 조회
-    const { results } = await this.env.DB.prepare(`
-      SELECT nickname_color FROM channel_members
-      WHERE channel_id = ? AND user_id = ?
-    `).bind(session.channelId, session.userId).all();
-    
-    const nicknameColor = results[0]?.nickname_color || '#ffffff';
-    
-    // ✅ 길드 정보 포함하여 브로드캐스트
+    // 브로드캐스트
     this.broadcast(session.channelId, {
       type: 'message',
       author: session.nickname,
       authorId: session.userId,
-      authorColor: nicknameColor,
-      guild: session.guild || '없음', // ✅ 길드 정보
+      authorColor: session.nicknameColor,
+      avatar: session.avatar,
+      guild: session.guild,
+      guildColor: session.guildColor,
       content: data.content,
       timestamp: new Date().toISOString()
     });
   }
   
-  async handleLeaveChannel(session, data) {
-    const channelId = session.channelId;
-    
-    // 채널 멤버에서 제거
-    const members = this.channelMembers.get(channelId);
-    if (members) {
-      members.delete(session.userId);
-    }
-    
-    session.channelId = null;
-    
-    // 퇴장 알림
-    this.broadcast(channelId, {
-      type: 'user_left',
-      userId: session.userId,
-      nickname: session.nickname
-    }, session.userId);
-    
-    // 인원수 브로드캐스트
-    this.broadcastMemberCount(channelId);
+  // ✅ 퇴장 처리
+  async handleLeave(session, data) {
+    this.handleDisconnect(session);
   }
   
+  // ✅ 관리자 액션
+  async handleAdminAction(session, data) {
+    const { action, channelId, targetUserId } = data;
+    
+    // 권한 확인
+    const isAdmin = session.isSuperAdmin || session.role === 'owner' || session.role === 'moderator';
+    if (!isAdmin) {
+      session.webSocket.send(JSON.stringify({ type: 'error', message: '권한이 없습니다.' }));
+      return;
+    }
+    
+    const members = this.channelMembers.get(channelId);
+    const targetMember = members?.get(targetUserId);
+    
+    switch (action) {
+      case 'change_color':
+        if (targetMember) {
+          targetMember.nicknameColor = data.color;
+          
+          // DB 업데이트
+          try {
+            await this.env.DB.prepare(`
+              UPDATE channel_members SET nickname_color = ? 
+              WHERE channel_id = ? AND user_id = ?
+            `).bind(data.color, channelId, targetUserId).run();
+          } catch (e) {}
+          
+          // 브로드캐스트
+          this.broadcast(channelId, {
+            type: 'color_changed',
+            targetUserId,
+            color: data.color
+          });
+        }
+        break;
+        
+      case 'warn':
+        if (targetMember) {
+          targetMember.warnings = (targetMember.warnings || 0) + 1;
+          
+          // 경고 로그 저장
+          try {
+            await this.env.DB.prepare(`
+              INSERT INTO channel_warnings (channel_id, user_id, warned_by, reason)
+              VALUES (?, ?, ?, ?)
+            `).bind(channelId, targetUserId, session.userId, data.reason || '').run();
+            
+            await this.env.DB.prepare(`
+              UPDATE channel_members SET warnings = warnings + 1 
+              WHERE channel_id = ? AND user_id = ?
+            `).bind(channelId, targetUserId).run();
+          } catch (e) {}
+          
+          // 3회 경고시 뮤트
+          if (targetMember.warnings >= 3) {
+            targetMember.isMuted = true;
+            
+            try {
+              await this.env.DB.prepare(`
+                UPDATE channel_members SET is_muted = 1 
+                WHERE channel_id = ? AND user_id = ?
+              `).bind(channelId, targetUserId).run();
+            } catch (e) {}
+            
+            // 타겟 세션 업데이트
+            const targetSession = this.sessions.get(`${channelId}-${targetUserId}`);
+            if (targetSession) {
+              targetSession.isMuted = true;
+            }
+            
+            this.broadcast(channelId, {
+              type: 'warning',
+              message: `⚠️ ${targetMember.nickname}님이 경고 3회 누적으로 채팅 금지되었습니다.`
+            });
+          } else {
+            this.broadcast(channelId, {
+              type: 'warning',
+              message: `⚠️ ${targetMember.nickname}님에게 경고가 부여되었습니다. (${targetMember.warnings}/3)`
+            });
+          }
+        }
+        break;
+        
+      case 'kick':
+        const kickSession = this.sessions.get(`${channelId}-${targetUserId}`);
+        if (kickSession) {
+          kickSession.webSocket.send(JSON.stringify({ type: 'kicked', targetUserId }));
+          kickSession.webSocket.close();
+        }
+        
+        if (members) members.delete(targetUserId);
+        
+        this.broadcast(channelId, {
+          type: 'warning',
+          message: `👢 ${targetMember?.nickname || 'Unknown'}님이 추방되었습니다.`
+        });
+        
+        this.broadcastMemberCount(channelId);
+        break;
+        
+      case 'ban':
+        // DB에 밴 추가
+        try {
+          await this.env.DB.prepare(`
+            INSERT INTO channel_bans (channel_id, user_id, banned_by, reason)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(channel_id, user_id) DO UPDATE SET
+              reason = excluded.reason,
+              banned_at = CURRENT_TIMESTAMP
+          `).bind(channelId, targetUserId, session.userId, data.reason || '').run();
+        } catch (e) {}
+        
+        const banSession = this.sessions.get(`${channelId}-${targetUserId}`);
+        if (banSession) {
+          banSession.webSocket.send(JSON.stringify({ type: 'banned', targetUserId }));
+          banSession.webSocket.close();
+        }
+        
+        if (members) members.delete(targetUserId);
+        
+        this.broadcast(channelId, {
+          type: 'warning',
+          message: `🚫 ${targetMember?.nickname || 'Unknown'}님이 입장금지되었습니다.`
+        });
+        
+        this.broadcastMemberCount(channelId);
+        break;
+        
+      case 'set_role':
+        if (targetMember && (session.isSuperAdmin || session.role === 'owner')) {
+          targetMember.role = data.role;
+          
+          try {
+            await this.env.DB.prepare(`
+              UPDATE channel_members SET role = ? 
+              WHERE channel_id = ? AND user_id = ?
+            `).bind(data.role, channelId, targetUserId).run();
+          } catch (e) {}
+          
+          const targetRoleSession = this.sessions.get(`${channelId}-${targetUserId}`);
+          if (targetRoleSession) {
+            targetRoleSession.role = data.role;
+          }
+          
+          const roleMsg = data.role === 'moderator' 
+            ? `🛡️ ${targetMember.nickname}님이 부관리자로 지정되었습니다.`
+            : `🛡️ ${targetMember.nickname}님의 부관리자 권한이 해제되었습니다.`;
+          
+          this.broadcast(channelId, { type: 'warning', message: roleMsg });
+        }
+        break;
+        
+      case 'unmute':
+        if (targetMember) {
+          targetMember.isMuted = false;
+          targetMember.warnings = 0;
+          
+          try {
+            await this.env.DB.prepare(`
+              UPDATE channel_members SET is_muted = 0, warnings = 0 
+              WHERE channel_id = ? AND user_id = ?
+            `).bind(channelId, targetUserId).run();
+          } catch (e) {}
+          
+          const targetUnmuteSession = this.sessions.get(`${channelId}-${targetUserId}`);
+          if (targetUnmuteSession) {
+            targetUnmuteSession.isMuted = false;
+            targetUnmuteSession.warnings = 0;
+          }
+          
+          this.broadcast(channelId, {
+            type: 'warning',
+            message: `🔊 ${targetMember.nickname}님의 채팅 금지가 해제되었습니다.`
+          });
+        }
+        break;
+    }
+    
+    // 참여자 목록 업데이트 브로드캐스트
+    if (members) {
+      this.broadcast(channelId, {
+        type: 'members_list',
+        members: Array.from(members.values())
+      });
+    }
+  }
+  
+  // ✅ 브로드캐스트
   broadcast(channelId, message, excludeUserId = null) {
     const messageStr = JSON.stringify(message);
     
-    for (const [userId, session] of this.sessions) {
-      if (session.channelId === channelId && userId !== excludeUserId) {
+    for (const [sessionId, session] of this.sessions) {
+      if (session.channelId === channelId && session.userId !== excludeUserId) {
         try {
           session.webSocket.send(messageStr);
         } catch (error) {
@@ -236,11 +507,26 @@ export class ChatRoom {
     const members = this.channelMembers.get(channelId);
     const count = members ? members.size : 0;
     
+    // 해당 채널의 모든 세션에 전송
     this.broadcast(channelId, {
       type: 'member_count',
       channelId: channelId,
       count: count
     });
+    
+    // ✅ 전역 이벤트 (다른 채널 탭에서도 업데이트 가능하도록)
+    // 모든 세션에 전송
+    const globalMessage = JSON.stringify({
+      type: 'global_member_count',
+      channelId: channelId,
+      count: count
+    });
+    
+    for (const [sessionId, session] of this.sessions) {
+      try {
+        session.webSocket.send(globalMessage);
+      } catch (error) {}
+    }
   }
   
   async handleMessages(request) {
@@ -249,10 +535,9 @@ export class ChatRoom {
     const limit = parseInt(url.searchParams.get('limit') || '50');
     
     const { results } = await this.env.DB.prepare(`
-      SELECT m.*, u.custom_nickname, u.guild_id, cm.nickname_color, g.name as guild_name
+      SELECT m.*, u.custom_nickname, g.short_name, g.short_name_color
       FROM messages m
-      JOIN users u ON m.user_id = u.discord_id
-      LEFT JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.user_id = m.user_id
+      LEFT JOIN users u ON m.user_id = u.discord_id
       LEFT JOIN guilds g ON u.guild_id = g.id
       WHERE m.channel_id = ?
       ORDER BY m.created_at DESC
@@ -303,12 +588,7 @@ export default {
       return handleAuthCheck(request, env, corsHeaders);
     }
     
-    // 토큰 검증
-    if (url.pathname === '/api/auth/verify') {
-      return handleAuthVerify(request, env, corsHeaders);
-    }
-    
-    // ✅ 프로필 업데이트 (PUT 지원)
+    // 프로필
     if (url.pathname === '/api/users/profile') {
       if (request.method === 'POST') {
         return handleProfileCreate(request, env, corsHeaders);
@@ -317,7 +597,7 @@ export default {
       }
     }
     
-    // ✅ 길드 관리
+    // 길드
     if (url.pathname.startsWith('/api/guilds')) {
       if (url.pathname === '/api/guilds' && request.method === 'GET') {
         return handleGuildsList(request, env, corsHeaders);
@@ -333,7 +613,7 @@ export default {
       }
     }
     
-    // ✅ 채널 관리
+    // 채널
     if (url.pathname.startsWith('/api/channels')) {
       if (url.pathname === '/api/channels' && request.method === 'GET') {
         return handleChannelsList(request, env, corsHeaders);
@@ -360,24 +640,22 @@ export default {
   }
 };
 
-// Discord OAuth 콜백 처리
+// ============================================
+// API Handlers
+// ============================================
+
 async function handleDiscordCallback(request, env, corsHeaders) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   
   if (!code) {
-    return new Response('Authorization code not found', { 
-      status: 400, 
-      headers: corsHeaders 
-    });
+    return new Response('Authorization code not found', { status: 400, headers: corsHeaders });
   }
   
   try {
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: env.DISCORD_CLIENT_ID,
         client_secret: env.DISCORD_CLIENT_SECRET,
@@ -389,112 +667,48 @@ async function handleDiscordCallback(request, env, corsHeaders) {
     
     const tokenData = await tokenResponse.json();
     
-    if (!tokenData.access_token) {
-      throw new Error('Failed to get access token');
-    }
+    if (!tokenData.access_token) throw new Error('Failed to get access token');
     
     const userResponse = await fetch('https://discord.com/api/v10/users/@me', {
-      headers: {
-        'Authorization': `Bearer ${tokenData.access_token}`
-      }
+      headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
     });
     
     const discordUser = await userResponse.json();
-    
     const sessionId = crypto.randomUUID();
     
-    // 세션 정보 저장
     await env.SESSIONS.put(sessionId, JSON.stringify({
       discordUser,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + (tokenData.expires_in * 1000)
-    }), {
-      expirationTtl: 3600
-    });
+    }), { expirationTtl: 3600 });
     
-    // 최근 세션 ID 저장
-    await env.SESSIONS.put(`latest:${discordUser.id}`, sessionId, {
-      expirationTtl: 3600
-    });
+    await env.SESSIONS.put('latest', sessionId, { expirationTtl: 300 });
     
-    await env.SESSIONS.put('latest', sessionId, {
-      expirationTtl: 300
-    });
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>로그인 완료</title>
+      <style>body{font-family:'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;}
+      .container{text-align:center;background:rgba(255,255,255,0.1);padding:40px;border-radius:20px;backdrop-filter:blur(10px);}</style></head>
+      <body><div class="container"><h1>✅ 로그인 완료!</h1><p>이 창을 닫고 앱으로 돌아가세요.</p></div>
+      <script>setTimeout(()=>window.close(),2000);</script></body></html>`;
     
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>로그인 완료</title>
-        <style>
-          body {
-            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-          }
-          .container {
-            text-align: center;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 40px;
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-          }
-          h1 { margin-bottom: 20px; }
-          p { font-size: 18px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>✅ 로그인 완료!</h1>
-          <p>이 창을 닫고 앱으로 돌아가세요.</p>
-        </div>
-        <script>
-          setTimeout(() => window.close(), 2000);
-        </script>
-      </body>
-      </html>
-    `;
-    
-    return new Response(html, {
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'text/html; charset=utf-8'
-      }
-    });
+    return new Response(html, { headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' } });
   } catch (error) {
-    console.error('Discord OAuth error:', error);
-    return new Response('Authentication failed: ' + error.message, { 
-      status: 500, 
-      headers: corsHeaders 
-    });
+    return new Response('Authentication failed: ' + error.message, { status: 500, headers: corsHeaders });
   }
 }
 
-// 인증 확인
 async function handleAuthCheck(request, env, corsHeaders) {
   const url = new URL(request.url);
   
   if (url.searchParams.get('latest') === 'true') {
     const latestSessionId = await env.SESSIONS.get('latest');
-    
     if (!latestSessionId) {
-      return new Response(JSON.stringify({ 
-        authenticated: false, 
-        message: 'No recent session found' 
-      }), {
+      return new Response(JSON.stringify({ authenticated: false }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
     
     const sessionData = await env.SESSIONS.get(latestSessionId);
-    
     if (!sessionData) {
       return new Response(JSON.stringify({ authenticated: false }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -502,155 +716,54 @@ async function handleAuthCheck(request, env, corsHeaders) {
     }
     
     const session = JSON.parse(sessionData);
-    
     return new Response(JSON.stringify({
       authenticated: true,
       sessionId: latestSessionId,
       user: session.discordUser
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
   
-  const sessionId = url.searchParams.get('sessionId') || request.headers.get('X-Session-ID');
-  
-  if (!sessionId) {
-    return new Response(JSON.stringify({ authenticated: false }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-  
-  const ready = await env.SESSIONS.get(`ready:${sessionId}`);
-  
-  if (!ready) {
-    return new Response(JSON.stringify({ authenticated: false, waiting: true }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-  
-  const sessionData = await env.SESSIONS.get(sessionId);
-  
-  if (!sessionData) {
-    return new Response(JSON.stringify({ authenticated: false }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-  
-  const session = JSON.parse(sessionData);
-  
-  return new Response(JSON.stringify({
-    authenticated: true,
-    user: session.discordUser
-  }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-}
-
-// JWT 토큰 검증
-async function handleAuthVerify(request, env, corsHeaders) {
-  const authHeader = request.headers.get('Authorization');
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return new Response('Unauthorized', { status: 401, headers: corsHeaders });
-  }
-  
-  const token = authHeader.substring(7);
-  const sessionData = await env.SESSIONS.get(token);
-  
-  if (!sessionData) {
-    return new Response('Invalid token', { status: 401, headers: corsHeaders });
-  }
-  
-  return new Response(JSON.stringify({ valid: true }), {
+  return new Response(JSON.stringify({ authenticated: false }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 프로필 생성 (POST)
 async function handleProfileCreate(request, env, corsHeaders) {
-  try {
-    const data = await request.json();
-    
-    console.log('프로필 생성 요청:', data);
-    
-    await env.DB.prepare(`
-      INSERT INTO users (discord_id, discord_username, custom_nickname, avatar, email, guild_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(discord_id) DO UPDATE SET
-        custom_nickname = excluded.custom_nickname,
-        guild_id = excluded.guild_id,
-        updated_at = CURRENT_TIMESTAMP
-    `).bind(
-      data.discordId,
-      data.discordUsername,
-      data.customNickname,
-      data.avatar,
-      data.email,
-      data.guildId || null
-    ).run();
-    
-    const token = crypto.randomUUID();
-    
-    await env.SESSIONS.put(token, JSON.stringify(data), {
-      expirationTtl: 86400
-    });
-    
-    return new Response(JSON.stringify({
-      success: true,
-      token: token,
-      user: data
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    console.error('프로필 생성 오류:', error);
-    return new Response(JSON.stringify({
-      error: error.message,
-      stack: error.stack
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
+  const data = await request.json();
+  
+  await env.DB.prepare(`
+    INSERT INTO users (discord_id, discord_username, custom_nickname, avatar, email, guild_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(discord_id) DO UPDATE SET
+      custom_nickname = excluded.custom_nickname,
+      guild_id = excluded.guild_id,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(data.discordId, data.discordUsername, data.customNickname, data.avatar, data.email, data.guildId || null).run();
+  
+  const token = crypto.randomUUID();
+  await env.SESSIONS.put(token, JSON.stringify(data), { expirationTtl: 86400 });
+  
+  return new Response(JSON.stringify({ success: true, token, user: data }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
 }
 
-// ✅ 프로필 업데이트 (PUT)
 async function handleProfileUpdate(request, env, corsHeaders) {
-  try {
-    const data = await request.json();
-    
-    console.log('프로필 업데이트 요청:', data);
-    
-    await env.DB.prepare(`
-      UPDATE users 
-      SET custom_nickname = COALESCE(?, custom_nickname),
-          guild_id = COALESCE(?, guild_id),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE discord_id = ?
-    `).bind(
-      data.customNickname || null,
-      data.guildId || null,
-      data.discordId
-    ).run();
-    
-    return new Response(JSON.stringify({
-      success: true,
-      message: '프로필이 업데이트되었습니다'
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    console.error('프로필 업데이트 오류:', error);
-    return new Response(JSON.stringify({
-      error: error.message
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
+  const data = await request.json();
+  
+  await env.DB.prepare(`
+    UPDATE users SET 
+      custom_nickname = COALESCE(?, custom_nickname),
+      guild_id = COALESCE(?, guild_id),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE discord_id = ?
+  `).bind(data.customNickname || null, data.guildId || null, data.discordId).run();
+  
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
 }
 
-// ✅ 길드 목록
 async function handleGuildsList(request, env, corsHeaders) {
   const { results } = await env.DB.prepare(`
     SELECT * FROM guilds ORDER BY created_at DESC
@@ -661,14 +774,15 @@ async function handleGuildsList(request, env, corsHeaders) {
   });
 }
 
-// ✅ 길드 생성
 async function handleGuildCreate(request, env, corsHeaders) {
   const data = await request.json();
   
   const result = await env.DB.prepare(`
-    INSERT INTO guilds (name, faction, recruitment, description, contact, logo, owner_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO guilds (short_name, short_name_color, name, faction, recruitment, description, contact, logo, owner_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    data.shortName,
+    data.shortNameColor || '#667eea',
     data.name,
     data.faction,
     data.recruitment,
@@ -678,30 +792,36 @@ async function handleGuildCreate(request, env, corsHeaders) {
     data.ownerId
   ).run();
   
-  return new Response(JSON.stringify({ 
-    success: true,
-    guildId: result.meta.last_row_id
-  }), {
+  return new Response(JSON.stringify({ success: true, guildId: result.meta.last_row_id }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 길드 수정
 async function handleGuildUpdate(request, env, corsHeaders, guildId) {
   const data = await request.json();
   
   await env.DB.prepare(`
-    UPDATE guilds 
-    SET name = ?, faction = ?, recruitment = ?, updated_at = CURRENT_TIMESTAMP
+    UPDATE guilds SET 
+      short_name = ?, short_name_color = ?, name = ?, faction = ?, recruitment = ?,
+      description = ?, contact = ?, logo = COALESCE(?, logo), updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).bind(data.name, data.faction, data.recruitment, guildId).run();
+  `).bind(
+    data.shortName,
+    data.shortNameColor || '#667eea',
+    data.name,
+    data.faction,
+    data.recruitment,
+    data.description,
+    data.contact,
+    data.logo || null,
+    guildId
+  ).run();
   
   return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 길드 삭제
 async function handleGuildDelete(request, env, corsHeaders, guildId) {
   await env.DB.prepare(`DELETE FROM guilds WHERE id = ?`).bind(guildId).run();
   
@@ -710,14 +830,10 @@ async function handleGuildDelete(request, env, corsHeaders, guildId) {
   });
 }
 
-// ✅ 채널 목록
 async function handleChannelsList(request, env, corsHeaders) {
   const { results } = await env.DB.prepare(`
     SELECT 
-      c.id, 
-      c.name, 
-      c.logo,
-      c.owner_id,
+      c.id, c.name, c.logo, c.owner_id,
       CASE WHEN c.password IS NOT NULL THEN 1 ELSE 0 END as has_password,
       COUNT(cm.user_id) as member_count
     FROM channels c
@@ -731,45 +847,35 @@ async function handleChannelsList(request, env, corsHeaders) {
   });
 }
 
-// ✅ 채널 생성
 async function handleChannelCreate(request, env, corsHeaders) {
   const data = await request.json();
   
   const result = await env.DB.prepare(`
     INSERT INTO channels (name, password, logo, owner_id)
     VALUES (?, ?, ?, ?)
-  `).bind(
-    data.name,
-    data.password || null,
-    data.logo || null,
-    data.ownerId
-  ).run();
+  `).bind(data.name, data.password || null, data.logo || null, data.ownerId).run();
   
-  return new Response(JSON.stringify({ 
-    success: true,
-    channelId: result.meta.last_row_id
-  }), {
+  return new Response(JSON.stringify({ success: true, channelId: result.meta.last_row_id }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 채널 수정
 async function handleChannelUpdate(request, env, corsHeaders, channelId) {
   const data = await request.json();
   
   await env.DB.prepare(`
-    UPDATE channels 
-    SET name = ?, password = ?, updated_at = CURRENT_TIMESTAMP
+    UPDATE channels SET name = ?, password = ?, logo = COALESCE(?, logo), updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).bind(data.name, data.password || null, channelId).run();
+  `).bind(data.name, data.password || null, data.logo || null, channelId).run();
   
   return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 채널 삭제
 async function handleChannelDelete(request, env, corsHeaders, channelId) {
+  await env.DB.prepare(`DELETE FROM channel_members WHERE channel_id = ?`).bind(channelId).run();
+  await env.DB.prepare(`DELETE FROM messages WHERE channel_id = ?`).bind(channelId).run();
   await env.DB.prepare(`DELETE FROM channels WHERE id = ?`).bind(channelId).run();
   
   return new Response(JSON.stringify({ success: true }), {
@@ -777,7 +883,6 @@ async function handleChannelDelete(request, env, corsHeaders, channelId) {
   });
 }
 
-// ✅ 채널 비밀번호 검증
 async function handleChannelVerify(request, env, corsHeaders) {
   const { channelId, password } = await request.json();
   
@@ -786,26 +891,19 @@ async function handleChannelVerify(request, env, corsHeaders) {
   `).bind(channelId).first();
   
   if (!channel) {
-    return new Response(JSON.stringify({ 
-      success: false, 
-      error: '채널을 찾을 수 없습니다' 
-    }), {
-      status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ success: false, error: '채널을 찾을 수 없습니다' }), {
+      status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
   
   const isValid = channel.password === password;
   
-  return new Response(JSON.stringify({ 
-    success: isValid,
-    error: isValid ? null : '비밀번호가 틀렸습니다'
-  }), {
+  return new Response(JSON.stringify({ success: isValid, error: isValid ? null : '비밀번호가 틀렸습니다' }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 
-// ✅ 전체 채널 인원수
+// ✅ 실시간 인원수 API
 async function handleMemberCounts(request, env, corsHeaders) {
   const { results } = await env.DB.prepare(`
     SELECT channel_id, COUNT(user_id) as count
@@ -816,22 +914,15 @@ async function handleMemberCounts(request, env, corsHeaders) {
   return new Response(JSON.stringify(results.map(r => ({
     channelId: r.channel_id,
     count: r.count
-  }))), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-  });
+  }))), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// ✅ 특정 채널 인원수
 async function handleChannelMemberCount(request, env, corsHeaders, channelId) {
   const result = await env.DB.prepare(`
-    SELECT COUNT(user_id) as count
-    FROM channel_members
-    WHERE channel_id = ?
+    SELECT COUNT(user_id) as count FROM channel_members WHERE channel_id = ?
   `).bind(channelId).first();
   
-  return new Response(JSON.stringify({ 
-    count: result?.count || 0 
-  }), {
+  return new Response(JSON.stringify({ count: result?.count || 0 }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }

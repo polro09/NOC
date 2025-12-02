@@ -11,7 +11,10 @@
     <!-- 헤더 -->
     <div class="chat-header">
       <span class="chat-title">WOSB - 채팅</span>
-      <button class="close-btn" id="closeBtn">×</button>
+      <div class="chat-header-controls">
+        <button class="header-icon-btn" id="toggleMembersBtn" title="참여자 목록">👥</button>
+        <button class="close-btn" id="closeBtn">×</button>
+      </div>
     </div>
 
     <!-- 탭 영역 -->
@@ -19,9 +22,23 @@
       <!-- 탭들이 동적으로 추가됨 -->
     </div>
 
-    <!-- 채팅 영역 -->
-    <div class="chat-content" id="chatContent">
-      <!-- 탭 패널들이 동적으로 추가됨 -->
+    <!-- 메인 영역 (채팅 + 참여자 목록) -->
+    <div class="chat-main">
+      <!-- 채팅 영역 -->
+      <div class="chat-content" id="chatContent">
+        <!-- 탭 패널들이 동적으로 추가됨 -->
+      </div>
+
+      <!-- ✅ 참여자 목록 사이드바 (관리자용) -->
+      <div class="members-sidebar" id="membersSidebar" style="display: none;">
+        <div class="members-header">
+          <span>참여자 목록</span>
+          <span class="members-count" id="membersCount">0명</span>
+        </div>
+        <div class="members-list" id="membersList">
+          <!-- 참여자 목록이 동적으로 추가됨 -->
+        </div>
+      </div>
     </div>
   </div>
 
@@ -40,6 +57,53 @@
     <div class="modal-title">채널 선택</div>
     <div class="channel-select-list" id="channelSelectList">
       <!-- 채널 목록이 동적으로 추가됨 -->
+    </div>
+  </div>
+
+  <!-- ✅ 관리자 액션 모달 -->
+  <div class="admin-modal" id="adminModal" style="display: none;">
+    <div class="admin-modal-content">
+      <div class="admin-modal-header">
+        <span id="adminModalTitle">참여자 관리</span>
+        <button class="modal-close-btn" id="closeAdminModal">×</button>
+      </div>
+      <div class="admin-modal-body">
+        <div class="admin-target-info" id="adminTargetInfo">
+          <!-- 대상 사용자 정보 -->
+        </div>
+        <div class="admin-actions">
+          <button class="admin-action-btn color" id="actionChangeColor">🎨 닉네임 색상 변경</button>
+          <button class="admin-action-btn warn" id="actionWarn">⚠️ 경고 (3회시 채금)</button>
+          <button class="admin-action-btn kick" id="actionKick">👢 추방</button>
+          <button class="admin-action-btn ban" id="actionBan">🚫 입장금지</button>
+          <button class="admin-action-btn mod" id="actionModerator">🛡️ 부관리자 지정</button>
+          <button class="admin-action-btn unmute" id="actionUnmute" style="display: none;">🔊 채금 해제</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✅ 색상 선택 모달 -->
+  <div class="color-modal" id="colorModal" style="display: none;">
+    <div class="color-modal-content">
+      <div class="admin-modal-header">
+        <span>닉네임 색상 선택</span>
+        <button class="modal-close-btn" id="closeColorModal">×</button>
+      </div>
+      <div class="color-modal-body">
+        <input type="color" id="nicknameColorPicker" value="#ffffff">
+        <div class="color-presets">
+          <div class="color-preset" data-color="#ffffff" style="background: #ffffff;"></div>
+          <div class="color-preset" data-color="#ff6b6b" style="background: #ff6b6b;"></div>
+          <div class="color-preset" data-color="#ffd93d" style="background: #ffd93d;"></div>
+          <div class="color-preset" data-color="#6bcb77" style="background: #6bcb77;"></div>
+          <div class="color-preset" data-color="#4d96ff" style="background: #4d96ff;"></div>
+          <div class="color-preset" data-color="#9b59b6" style="background: #9b59b6;"></div>
+          <div class="color-preset" data-color="#ff9ff3" style="background: #ff9ff3;"></div>
+          <div class="color-preset" data-color="#00d2d3" style="background: #00d2d3;"></div>
+        </div>
+        <button class="modal-btn confirm" id="confirmColorBtn">적용</button>
+      </div>
     </div>
   </div>
 

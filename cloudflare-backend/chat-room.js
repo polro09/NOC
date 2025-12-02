@@ -1,231 +1,864 @@
-// Cloudflare Durable Objects - WebSocket Chat Room
+const { ipcRenderer } = require('electron');
+const { API_BASE } = require('../config');
 
-export class ChatRoom {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-    this.sessions = new Map(); // WebSocket 세션 저장
+// ✅ 총 관리자 ID
+const SUPER_ADMIN_ID = '257097077782216704';
+
+// 채널 데이터
+let channels = [];
+let activeChannelId = null;
+let ws = null;
+let currentUser = null;
+let pendingChannel = null;
+
+// ✅ 참여자 목록
+let channelMembers = new Map(); // channelId -> [members]
+
+// ✅ 관리 대상 사용자
+let targetUser = null;
+
+// 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  loadUserData();
+  initializeUI();
+  
+  ipcRenderer.on('load-channel', (event, channelData) => {
+    // 사용자 정보 업데이트
+    if (channelData.user) {
+      currentUser = {
+        ...currentUser,
+        ...channelData.user
+      };
+      localStorage.setItem('chatUser', JSON.stringify(currentUser));
+    }
+    addChannel(channelData);
+  });
+});
+
+// 사용자 데이터 로드
+function loadUserData() {
+  const userData = localStorage.getItem('userData');
+  const chatUser = localStorage.getItem('chatUser');
+  
+  if (chatUser) {
+    currentUser = JSON.parse(chatUser);
+  } else if (userData) {
+    currentUser = JSON.parse(userData);
+  }
+}
+
+// ✅ 권한 확인 함수들
+function isSuperAdmin() {
+  return currentUser && currentUser.discordId === SUPER_ADMIN_ID;
+}
+
+function isChannelOwner(channelId) {
+  const channel = channels.find(c => c.id === channelId);
+  return channel && currentUser && String(channel.ownerId) === String(currentUser.discordId);
+}
+
+function isChannelAdmin(channelId) {
+  return isSuperAdmin() || isChannelOwner(channelId);
+}
+
+function isChannelModerator(channelId) {
+  // TODO: 서버에서 부관리자 목록 확인
+  return false;
+}
+
+function canManageMembers(channelId) {
+  return isChannelAdmin(channelId) || isChannelModerator(channelId);
+}
+
+// UI 초기화
+function initializeUI() {
+  // 닫기 버튼
+  document.getElementById('closeBtn').addEventListener('click', () => {
+    ipcRenderer.send('close-chat-overlay');
+  });
+  
+  // ✅ 참여자 목록 토글
+  document.getElementById('toggleMembersBtn').addEventListener('click', toggleMembersSidebar);
+  
+  // [+] 채널 추가 버튼 생성
+  createAddChannelButton();
+  
+  // 비밀번호 모달
+  document.getElementById('confirmBtn').addEventListener('click', handlePasswordConfirm);
+  document.getElementById('cancelBtn').addEventListener('click', hidePasswordModal);
+  document.getElementById('passwordInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handlePasswordConfirm();
+  });
+  
+  // 채널 선택 모달
+  document.getElementById('channelSelectModal').addEventListener('click', (e) => {
+    if (e.target.id === 'channelSelectModal') closeChannelSelectModal();
+  });
+  
+  // ✅ 관리자 모달
+  document.getElementById('closeAdminModal').addEventListener('click', closeAdminModal);
+  document.getElementById('actionChangeColor').addEventListener('click', openColorModal);
+  document.getElementById('actionWarn').addEventListener('click', warnUser);
+  document.getElementById('actionKick').addEventListener('click', kickUser);
+  document.getElementById('actionBan').addEventListener('click', banUser);
+  document.getElementById('actionModerator').addEventListener('click', toggleModerator);
+  document.getElementById('actionUnmute').addEventListener('click', unmuteUser);
+  
+  // ✅ 색상 선택 모달
+  document.getElementById('closeColorModal').addEventListener('click', closeColorModal);
+  document.getElementById('confirmColorBtn').addEventListener('click', applyNicknameColor);
+  document.querySelectorAll('.color-preset').forEach(preset => {
+    preset.addEventListener('click', () => {
+      document.getElementById('nicknameColorPicker').value = preset.dataset.color;
+    });
+  });
+}
+
+// ✅ 참여자 목록 토글
+function toggleMembersSidebar() {
+  const sidebar = document.getElementById('membersSidebar');
+  const btn = document.getElementById('toggleMembersBtn');
+  
+  if (!canManageMembers(activeChannelId)) {
+    alert('관리자만 참여자 목록을 볼 수 있습니다.');
+    return;
   }
   
-  async fetch(request) {
-    const url = new URL(request.url);
+  if (sidebar.style.display === 'none') {
+    sidebar.style.display = 'flex';
+    btn.classList.add('active');
+    updateMembersList(activeChannelId);
+  } else {
+    sidebar.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+// ✅ 참여자 목록 업데이트
+function updateMembersList(channelId) {
+  const membersList = document.getElementById('membersList');
+  const membersCount = document.getElementById('membersCount');
+  const members = channelMembers.get(channelId) || [];
+  
+  membersCount.textContent = `${members.length}명`;
+  membersList.innerHTML = '';
+  
+  members.forEach(member => {
+    const item = document.createElement('div');
+    item.className = 'member-item';
     
-    // WebSocket 업그레이드 요청
-    if (request.headers.get('Upgrade') === 'websocket') {
-      return this.handleWebSocket(request);
+    // 역할 뱃지
+    let roleBadge = '';
+    if (member.discordId === SUPER_ADMIN_ID) {
+      roleBadge = '<span class="role-badge super">👑</span>';
+    } else if (member.role === 'owner') {
+      roleBadge = '<span class="role-badge owner">⭐</span>';
+    } else if (member.role === 'moderator') {
+      roleBadge = '<span class="role-badge mod">🛡️</span>';
     }
     
-    // HTTP 요청 (채팅 히스토리 등)
-    if (url.pathname.startsWith('/messages')) {
-      return this.handleMessages(request);
+    // 뮤트 상태
+    const muteIcon = member.isMuted ? ' <span class="mute-icon">🔇</span>' : '';
+    
+    item.innerHTML = `
+      <span class="member-name" style="color: ${member.nicknameColor || '#ffffff'};">
+        ${roleBadge}${member.nickname}${muteIcon}
+      </span>
+    `;
+    
+    // 클릭 시 관리 메뉴
+    if (canManageMembers(channelId) && member.discordId !== currentUser.discordId) {
+      item.style.cursor = 'pointer';
+      item.addEventListener('click', () => openAdminModal(member));
     }
     
-    return new Response('Not found', { status: 404 });
+    membersList.appendChild(item);
+  });
+}
+
+// ✅ 관리자 모달 열기
+function openAdminModal(member) {
+  targetUser = member;
+  
+  document.getElementById('adminTargetInfo').innerHTML = `
+    <div class="target-avatar">👤</div>
+    <div class="target-name" style="color: ${member.nicknameColor || '#ffffff'};">
+      ${member.guild ? `<span style="color: ${member.guildColor || '#667eea'};">[${member.guild}]</span> ` : ''}
+      ${member.nickname}
+    </div>
+    <div class="target-id">${member.discordId}</div>
+  `;
+  
+  // 총 관리자만 부관리자 지정 가능
+  const modBtn = document.getElementById('actionModerator');
+  modBtn.style.display = isChannelOwner(activeChannelId) || isSuperAdmin() ? 'block' : 'none';
+  modBtn.textContent = member.role === 'moderator' ? '🛡️ 부관리자 해제' : '🛡️ 부관리자 지정';
+  
+  // 뮤트 해제 버튼
+  const unmuteBtn = document.getElementById('actionUnmute');
+  unmuteBtn.style.display = member.isMuted ? 'block' : 'none';
+  
+  document.getElementById('adminModal').style.display = 'flex';
+}
+
+function closeAdminModal() {
+  document.getElementById('adminModal').style.display = 'none';
+  targetUser = null;
+}
+
+// ✅ 색상 모달
+function openColorModal() {
+  if (!targetUser) return;
+  document.getElementById('nicknameColorPicker').value = targetUser.nicknameColor || '#ffffff';
+  document.getElementById('colorModal').style.display = 'flex';
+}
+
+function closeColorModal() {
+  document.getElementById('colorModal').style.display = 'none';
+}
+
+function applyNicknameColor() {
+  if (!targetUser) return;
+  
+  const color = document.getElementById('nicknameColorPicker').value;
+  
+  // WebSocket으로 전송
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'change_color',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId,
+      color: color
+    }));
   }
   
-  // WebSocket 연결 처리
-  async handleWebSocket(request) {
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
+  // 로컬 업데이트
+  const members = channelMembers.get(activeChannelId) || [];
+  const member = members.find(m => m.discordId === targetUser.discordId);
+  if (member) member.nicknameColor = color;
+  
+  updateMembersList(activeChannelId);
+  closeColorModal();
+  closeAdminModal();
+  
+  addSystemMessage(activeChannelId, `${targetUser.nickname}님의 닉네임 색상이 변경되었습니다.`);
+}
+
+// ✅ 경고
+function warnUser() {
+  if (!targetUser) return;
+  
+  const reason = prompt('경고 사유를 입력하세요:');
+  if (!reason) return;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'warn',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId,
+      reason: reason,
+      adminId: currentUser.discordId
+    }));
+  }
+  
+  // 로컬 경고 카운트 증가
+  const members = channelMembers.get(activeChannelId) || [];
+  const member = members.find(m => m.discordId === targetUser.discordId);
+  if (member) {
+    member.warnings = (member.warnings || 0) + 1;
     
-    // WebSocket 세션 생성
-    const session = {
-      webSocket: server,
-      userId: null,
-      channelId: null,
-      nickname: null,
-      nicknameColor: '#ffffff'
+    if (member.warnings >= 3) {
+      member.isMuted = true;
+      addSystemMessage(activeChannelId, `⚠️ ${targetUser.nickname}님이 경고 3회 누적으로 채팅 금지되었습니다.`);
+    } else {
+      addSystemMessage(activeChannelId, `⚠️ ${targetUser.nickname}님에게 경고가 부여되었습니다. (${member.warnings}/3) 사유: ${reason}`);
+    }
+  }
+  
+  updateMembersList(activeChannelId);
+  closeAdminModal();
+}
+
+// ✅ 추방
+function kickUser() {
+  if (!targetUser) return;
+  
+  if (!confirm(`${targetUser.nickname}님을 추방하시겠습니까?`)) return;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'kick',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId
+    }));
+  }
+  
+  // 로컬에서 제거
+  const members = channelMembers.get(activeChannelId) || [];
+  const index = members.findIndex(m => m.discordId === targetUser.discordId);
+  if (index > -1) members.splice(index, 1);
+  
+  addSystemMessage(activeChannelId, `👢 ${targetUser.nickname}님이 추방되었습니다.`);
+  updateMembersList(activeChannelId);
+  closeAdminModal();
+}
+
+// ✅ 입장금지
+function banUser() {
+  if (!targetUser) return;
+  
+  const reason = prompt('입장금지 사유를 입력하세요:');
+  if (!reason) return;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'ban',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId,
+      reason: reason
+    }));
+  }
+  
+  // 로컬에서 제거
+  const members = channelMembers.get(activeChannelId) || [];
+  const index = members.findIndex(m => m.discordId === targetUser.discordId);
+  if (index > -1) members.splice(index, 1);
+  
+  addSystemMessage(activeChannelId, `🚫 ${targetUser.nickname}님이 입장금지되었습니다. 사유: ${reason}`);
+  updateMembersList(activeChannelId);
+  closeAdminModal();
+}
+
+// ✅ 부관리자 지정/해제
+function toggleModerator() {
+  if (!targetUser) return;
+  
+  const isCurrentlyMod = targetUser.role === 'moderator';
+  const newRole = isCurrentlyMod ? 'user' : 'moderator';
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'set_role',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId,
+      role: newRole
+    }));
+  }
+  
+  // 로컬 업데이트
+  const members = channelMembers.get(activeChannelId) || [];
+  const member = members.find(m => m.discordId === targetUser.discordId);
+  if (member) member.role = newRole;
+  
+  const message = isCurrentlyMod
+    ? `🛡️ ${targetUser.nickname}님의 부관리자 권한이 해제되었습니다.`
+    : `🛡️ ${targetUser.nickname}님이 부관리자로 지정되었습니다.`;
+  
+  addSystemMessage(activeChannelId, message);
+  updateMembersList(activeChannelId);
+  closeAdminModal();
+}
+
+// ✅ 채금 해제
+function unmuteUser() {
+  if (!targetUser) return;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'admin_action',
+      action: 'unmute',
+      channelId: activeChannelId,
+      targetUserId: targetUser.discordId
+    }));
+  }
+  
+  // 로컬 업데이트
+  const members = channelMembers.get(activeChannelId) || [];
+  const member = members.find(m => m.discordId === targetUser.discordId);
+  if (member) {
+    member.isMuted = false;
+    member.warnings = 0;
+  }
+  
+  addSystemMessage(activeChannelId, `🔊 ${targetUser.nickname}님의 채팅 금지가 해제되었습니다.`);
+  updateMembersList(activeChannelId);
+  closeAdminModal();
+}
+
+// ✅ 시스템 메시지 추가
+function addSystemMessage(channelId, content) {
+  addMessage(channelId, {
+    author: '시스템',
+    avatar: null,
+    content: content,
+    timestamp: new Date(),
+    isSystem: true
+  });
+}
+
+// [+] 채널 추가 버튼 생성
+function createAddChannelButton() {
+  const addBtn = document.createElement('button');
+  addBtn.className = 'tab add-tab-btn';
+  addBtn.textContent = '+';
+  addBtn.title = '채널 추가';
+  addBtn.addEventListener('click', openChannelSelectModal);
+  document.getElementById('tabs').appendChild(addBtn);
+}
+
+// 채널 추가
+function addChannel(channelData) {
+  if (channels.find(ch => ch.id === channelData.id)) {
+    switchChannel(channelData.id);
+    return;
+  }
+  
+  channels.push(channelData);
+  channelMembers.set(channelData.id, []);
+  
+  // 탭 생성
+  const tab = document.createElement('button');
+  tab.className = 'tab';
+  tab.dataset.channelId = channelData.id;
+  
+  if (channelData.isPrivate) {
+    tab.innerHTML = '<span class="lock-icon">🔒</span> ';
+  }
+  
+  tab.innerHTML += channelData.name;
+  
+  // 인원수 표시
+  const userCount = document.createElement('span');
+  userCount.className = 'user-count';
+  userCount.dataset.channelId = channelData.id;
+  userCount.textContent = `(${channelData.memberCount || 0})`;
+  tab.appendChild(userCount);
+  
+  // 탭 닫기 버튼
+  const closeBtn = document.createElement('span');
+  closeBtn.className = 'tab-close';
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeChannel(channelData.id);
+  });
+  tab.appendChild(closeBtn);
+  
+  tab.addEventListener('click', () => switchChannel(channelData.id));
+  
+  const tabsContainer = document.getElementById('tabs');
+  const addBtn = tabsContainer.querySelector('.add-tab-btn');
+  tabsContainer.insertBefore(tab, addBtn);
+  
+  // 탭 패널 생성
+  const panel = document.createElement('div');
+  panel.className = 'tab-panel';
+  panel.dataset.channelId = channelData.id;
+  
+  const messages = document.createElement('div');
+  messages.className = 'messages';
+  messages.id = `messages-${channelData.id}`;
+  
+  const inputArea = document.createElement('div');
+  inputArea.className = 'input-area';
+  
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'message-input';
+  input.placeholder = 'Enter로 전송';
+  input.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && input.value.trim()) {
+      sendMessage(channelData.id, input.value.trim());
+      input.value = '';
+    }
+  });
+  
+  inputArea.appendChild(input);
+  panel.appendChild(messages);
+  panel.appendChild(inputArea);
+  
+  document.getElementById('chatContent').appendChild(panel);
+  
+  connectToChannel(channelData);
+  
+  if (channels.length === 1) {
+    switchChannel(channelData.id);
+  }
+}
+
+// 채널 전환
+function switchChannel(channelId) {
+  activeChannelId = channelId;
+  
+  document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
+  
+  const tab = document.querySelector(`.tab[data-channel-id="${channelId}"]`);
+  const panel = document.querySelector(`.tab-panel[data-channel-id="${channelId}"]`);
+  
+  if (tab) tab.classList.add('active');
+  if (panel) panel.classList.add('active');
+  
+  // 참여자 목록 업데이트
+  if (document.getElementById('membersSidebar').style.display !== 'none') {
+    updateMembersList(channelId);
+  }
+}
+
+// 채널 제거
+function removeChannel(channelId) {
+  const index = channels.findIndex(ch => ch.id === channelId);
+  if (index > -1) channels.splice(index, 1);
+  
+  channelMembers.delete(channelId);
+  
+  const tab = document.querySelector(`.tab[data-channel-id="${channelId}"]`);
+  if (tab) tab.remove();
+  
+  const panel = document.querySelector(`.tab-panel[data-channel-id="${channelId}"]`);
+  if (panel) panel.remove();
+  
+  if (activeChannelId === channelId && channels.length > 0) {
+    switchChannel(channels[0].id);
+  }
+  
+  if (channels.length === 0) {
+    ipcRenderer.send('close-chat-overlay');
+  }
+}
+
+// WebSocket 연결
+function connectToChannel(channelData) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+  
+  try {
+    const wsBaseUrl = API_BASE.replace('/api', '').replace('https:', 'wss:').replace('http:', 'ws:');
+    const wsUrl = `${wsBaseUrl}/ws/channel/${channelData.id}`;
+    
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+      console.log('✅ WebSocket 연결 성공:', channelData.id);
+      
+      // 인증 및 입장
+      ws.send(JSON.stringify({
+        type: 'join',
+        channelId: channelData.id,
+        user: currentUser
+      }));
+      
+      addSystemMessage(channelData.id, `${channelData.name}에 입장하셨습니다.`);
     };
     
-    // WebSocket 이벤트 핸들러
-    server.accept();
-    
-    server.addEventListener('message', async (event) => {
+    ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        await this.handleMessage(session, data);
+        handleWebSocketMessage(channelData.id, data);
       } catch (error) {
-        console.error('WebSocket message error:', error);
+        console.error('메시지 파싱 오류:', error);
       }
-    });
+    };
     
-    server.addEventListener('close', () => {
-      this.sessions.delete(session.userId);
+    ws.onerror = (error) => {
+      console.error('❌ WebSocket 오류:', error);
+      addSystemMessage(channelData.id, '⚠️ 서버 연결 실패. 로컬 모드로 작동합니다.');
+    };
+    
+    ws.onclose = () => {
+      console.log('🔌 WebSocket 연결 종료:', channelData.id);
+    };
+    
+  } catch (error) {
+    console.error('❌ WebSocket 연결 실패:', error);
+    addSystemMessage(channelData.id, `${channelData.name}에 입장하셨습니다. (오프라인 모드)`);
+  }
+}
+
+// ✅ WebSocket 메시지 처리
+function handleWebSocketMessage(channelId, data) {
+  switch (data.type) {
+    case 'message':
+      addMessage(channelId, data);
+      break;
       
-      // 퇴장 알림
-      if (session.channelId) {
-        this.broadcast(session.channelId, {
-          type: 'user_left',
-          userId: session.userId,
-          nickname: session.nickname
-        }, session.userId);
+    case 'member_count':
+      updateMemberCount(data.channelId, data.count);
+      break;
+      
+    // ✅ 전역 인원수 업데이트 (모든 채널 탭에서 반영)
+    case 'global_member_count':
+      updateMemberCount(data.channelId, data.count);
+      break;
+      
+    case 'members_list':
+      channelMembers.set(data.channelId || channelId, data.members);
+      updateMembersList(data.channelId || channelId);
+      break;
+      
+    case 'user_joined':
+      const members = channelMembers.get(channelId) || [];
+      if (!members.find(m => m.discordId === data.user.discordId)) {
+        members.push(data.user);
+        channelMembers.set(channelId, members);
       }
-    });
-    
-    return new Response(null, {
-      status: 101,
-      webSocket: client
-    });
-  }
-  
-  // 메시지 처리
-  async handleMessage(session, data) {
-    switch (data.type) {
-      case 'auth':
-        await this.handleAuth(session, data);
-        break;
-        
-      case 'join_channel':
-        await this.handleJoinChannel(session, data);
-        break;
-        
-      case 'message':
-        await this.handleChatMessage(session, data);
-        break;
-        
-      case 'leave_channel':
-        await this.handleLeaveChannel(session, data);
-        break;
-    }
-  }
-  
-  // 인증 처리
-  async handleAuth(session, data) {
-    // 토큰 검증
-    const sessionData = await this.env.SESSIONS.get(data.token);
-    
-    if (!sessionData) {
-      session.webSocket.send(JSON.stringify({
-        type: 'error',
-        message: 'Invalid token'
-      }));
-      session.webSocket.close();
-      return;
-    }
-    
-    const userData = JSON.parse(sessionData);
-    session.userId = userData.discordId;
-    session.nickname = userData.customNickname;
-    
-    this.sessions.set(session.userId, session);
-    
-    session.webSocket.send(JSON.stringify({
-      type: 'auth_success',
-      userId: session.userId
-    }));
-  }
-  
-  // 채널 입장
-  async handleJoinChannel(session, data) {
-    session.channelId = data.channelId;
-    
-    // 채널 멤버에 추가
-    await this.env.DB.prepare(`
-      INSERT OR IGNORE INTO channel_members (channel_id, user_id)
-      VALUES (?, ?)
-    `).bind(data.channelId, session.userId).run();
-    
-    // 입장 알림
-    this.broadcast(session.channelId, {
-      type: 'user_joined',
-      userId: session.userId,
-      nickname: session.nickname
-    }, session.userId);
-    
-    // 최근 메시지 전송
-    const { results } = await this.env.DB.prepare(`
-      SELECT m.*, u.custom_nickname, cm.nickname_color
-      FROM messages m
-      JOIN users u ON m.user_id = u.discord_id
-      LEFT JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.user_id = m.user_id
-      WHERE m.channel_id = ?
-      ORDER BY m.created_at DESC
-      LIMIT 50
-    `).bind(data.channelId).all();
-    
-    session.webSocket.send(JSON.stringify({
-      type: 'message_history',
-      messages: results.reverse()
-    }));
-  }
-  
-  // 채팅 메시지
-  async handleChatMessage(session, data) {
-    if (!session.channelId || !session.userId) {
-      return;
-    }
-    
-    // 메시지 저장
-    await this.env.DB.prepare(`
-      INSERT INTO messages (channel_id, user_id, content)
-      VALUES (?, ?, ?)
-    `).bind(session.channelId, session.userId, data.content).run();
-    
-    // 닉네임 색상 조회
-    const { results } = await this.env.DB.prepare(`
-      SELECT nickname_color FROM channel_members
-      WHERE channel_id = ? AND user_id = ?
-    `).bind(session.channelId, session.userId).all();
-    
-    const nicknameColor = results[0]?.nickname_color || '#ffffff';
-    
-    // 브로드캐스트
-    this.broadcast(session.channelId, {
-      type: 'message',
-      author: session.nickname,
-      authorId: session.userId,
-      authorColor: nicknameColor,
-      content: data.content,
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // 채널 퇴장
-  async handleLeaveChannel(session, data) {
-    const channelId = session.channelId;
-    session.channelId = null;
-    
-    // 퇴장 알림
-    this.broadcast(channelId, {
-      type: 'user_left',
-      userId: session.userId,
-      nickname: session.nickname
-    }, session.userId);
-  }
-  
-  // 브로드캐스트
-  broadcast(channelId, message, excludeUserId = null) {
-    const messageStr = JSON.stringify(message);
-    
-    for (const [userId, session] of this.sessions) {
-      if (session.channelId === channelId && userId !== excludeUserId) {
-        try {
-          session.webSocket.send(messageStr);
-        } catch (error) {
-          console.error('Broadcast error:', error);
-        }
+      updateMembersList(channelId);
+      addSystemMessage(channelId, `${data.user.nickname}님이 입장하셨습니다.`);
+      break;
+      
+    case 'user_left':
+      const currentMembers = channelMembers.get(channelId) || [];
+      const idx = currentMembers.findIndex(m => m.discordId === data.userId);
+      if (idx > -1) currentMembers.splice(idx, 1);
+      channelMembers.set(channelId, currentMembers);
+      updateMembersList(channelId);
+      addSystemMessage(channelId, `${data.nickname}님이 퇴장하셨습니다.`);
+      break;
+      
+    case 'color_changed':
+      // 닉네임 색상 변경 반영
+      const colorMembers = channelMembers.get(channelId) || [];
+      const colorMember = colorMembers.find(m => m.discordId === data.targetUserId);
+      if (colorMember) colorMember.nicknameColor = data.color;
+      updateMembersList(channelId);
+      break;
+      
+    case 'kicked':
+      if (data.targetUserId === currentUser.discordId) {
+        alert('채널에서 추방되었습니다.');
+        removeChannel(channelId);
       }
-    }
+      break;
+      
+    case 'banned':
+      if (data.targetUserId === currentUser.discordId) {
+        alert('채널에서 입장금지되었습니다.');
+        removeChannel(channelId);
+      }
+      break;
+      
+    case 'warning':
+      addSystemMessage(channelId, data.message);
+      break;
+  }
+}
+
+// 메시지 추가
+function addMessage(channelId, messageData) {
+  const messagesContainer = document.getElementById(`messages-${channelId}`);
+  if (!messagesContainer) return;
+  
+  const message = document.createElement('div');
+  message.className = messageData.isSystem ? 'message system' : 'message';
+  
+  if (!messageData.isSystem) {
+    const avatar = document.createElement('img');
+    avatar.className = 'avatar';
+    avatar.src = messageData.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
+    avatar.alt = 'Avatar';
+    message.appendChild(avatar);
   }
   
-  // 메시지 히스토리 조회
-  async handleMessages(request) {
-    const url = new URL(request.url);
-    const channelId = url.searchParams.get('channelId');
-    const limit = parseInt(url.searchParams.get('limit') || '50');
-    
-    const { results } = await this.env.DB.prepare(`
-      SELECT m.*, u.custom_nickname, cm.nickname_color
-      FROM messages m
-      JOIN users u ON m.user_id = u.discord_id
-      LEFT JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.user_id = m.user_id
-      WHERE m.channel_id = ?
-      ORDER BY m.created_at DESC
-      LIMIT ?
-    `).bind(channelId, limit).all();
-    
-    return new Response(JSON.stringify(results.reverse()), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+  const messageBody = document.createElement('div');
+  messageBody.className = 'message-body';
+  
+  const messageHeader = document.createElement('div');
+  messageHeader.className = 'message-header';
+  
+  const author = document.createElement('span');
+  author.className = 'author';
+  
+  // ✅ 길드 태그 (색상 적용)
+  if (messageData.guild && messageData.guild !== '없음' && !messageData.isSystem) {
+    const guildTag = document.createElement('span');
+    guildTag.className = 'guild-tag';
+    guildTag.textContent = `[${messageData.guild}] `;
+    guildTag.style.color = messageData.guildColor || '#667eea';
+    author.appendChild(guildTag);
   }
+  
+  const authorName = document.createElement('span');
+  authorName.textContent = messageData.author;
+  authorName.style.color = messageData.authorColor || (messageData.isSystem ? '#ffd93d' : '#ffffff');
+  author.appendChild(authorName);
+  
+  const timestamp = document.createElement('span');
+  timestamp.className = 'timestamp';
+  const time = new Date(messageData.timestamp);
+  timestamp.textContent = time.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  
+  messageHeader.appendChild(author);
+  messageHeader.appendChild(timestamp);
+  
+  const messageContent = document.createElement('div');
+  messageContent.className = 'message-content';
+  messageContent.textContent = messageData.content;
+  
+  messageBody.appendChild(messageHeader);
+  messageBody.appendChild(messageContent);
+  
+  message.appendChild(messageBody);
+  
+  messagesContainer.appendChild(message);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// 메시지 전송
+function sendMessage(channelId, content) {
+  const userData = localStorage.getItem('userData');
+  if (userData) {
+    currentUser = { ...currentUser, ...JSON.parse(userData) };
+  }
+  
+  if (!currentUser) return;
+  
+  // 길드 색상 가져오기
+  const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+  const userGuild = guilds.find(g => g.shortName === currentUser.guild || g.name === currentUser.guild);
+  
+  const extension = currentUser.avatar && currentUser.avatar.startsWith('a_') ? 'gif' : 'png';
+  const avatarUrl = currentUser.avatar 
+    ? `https://cdn.discordapp.com/avatars/${currentUser.discordId}/${currentUser.avatar}.${extension}?size=128`
+    : `https://cdn.discordapp.com/embed/avatars/${parseInt(currentUser.discordId) % 5}.png`;
+  
+  const messageData = {
+    type: 'message',
+    author: currentUser.customNickname || currentUser.discordUsername,
+    authorId: currentUser.discordId,
+    avatar: avatarUrl,
+    guild: currentUser.guild || '없음',
+    guildColor: userGuild ? userGuild.shortNameColor : '#667eea',
+    content: content,
+    timestamp: new Date()
+  };
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(messageData));
+    // ✅ 서버에서 브로드캐스트 받으면 표시되므로 로컬 추가 제거
+  } else {
+    // ✅ 오프라인일 때만 로컬에 표시
+    addMessage(channelId, messageData);
+  }
+}
+
+// 인원수 업데이트
+function updateMemberCount(channelId, count) {
+  const userCountEl = document.querySelector(`.user-count[data-channel-id="${channelId}"]`);
+  if (userCountEl) {
+    userCountEl.textContent = `(${count})`;
+  }
+  
+  // 참여자 목록 카운트도 업데이트
+  if (activeChannelId === channelId) {
+    document.getElementById('membersCount').textContent = `${count}명`;
+  }
+  
+  // ✅ 메인 창에 인원수 변경 알림 (IPC)
+  ipcRenderer.send('update-channel-member-count', { channelId, count });
+}
+
+// 비밀번호 모달
+function showPasswordModal() {
+  document.getElementById('passwordModal').classList.add('active');
+  document.getElementById('passwordInput').focus();
+}
+
+function hidePasswordModal() {
+  document.getElementById('passwordModal').classList.remove('active');
+  document.getElementById('passwordInput').value = '';
+}
+
+async function handlePasswordConfirm() {
+  const password = document.getElementById('passwordInput').value;
+  if (!password || !pendingChannel) return;
+  
+  try {
+    const response = await fetch(`${API_BASE}/channels/verify-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: pendingChannel.id, password: password })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      hidePasswordModal();
+      addChannel(pendingChannel);
+      pendingChannel = null;
+    } else {
+      alert(result.error || '비밀번호가 틀렸습니다.');
+      document.getElementById('passwordInput').value = '';
+      document.getElementById('passwordInput').focus();
+    }
+  } catch (error) {
+    alert('비밀번호 검증에 실패했습니다.');
+  }
+}
+
+function addChannelFromList(channel) {
+  if (channel.isPrivate) {
+    pendingChannel = channel;
+    showPasswordModal();
+  } else {
+    addChannel(channel);
+  }
+}
+
+// 채널 선택 모달
+async function openChannelSelectModal() {
+  const modal = document.getElementById('channelSelectModal');
+  const list = document.getElementById('channelSelectList');
+  
+  try {
+    const response = await fetch(`${API_BASE}/channels`);
+    const allChannels = await response.json();
+    
+    const openChannelIds = channels.map(ch => ch.id);
+    const availableChannels = allChannels.filter(ch => !openChannelIds.includes(ch.id));
+    
+    list.innerHTML = '';
+    
+    if (availableChannels.length === 0) {
+      list.innerHTML = '<div style="color: white; text-align: center; padding: 20px;">사용 가능한 채널이 없습니다</div>';
+    } else {
+      availableChannels.forEach(channel => {
+        const item = document.createElement('div');
+        item.className = 'channel-select-item';
+        item.innerHTML = `
+          <div class="channel-icon">${channel.has_password ? '🔒' : '#'}</div>
+          <div class="channel-info">
+            <div class="channel-name">${channel.name}</div>
+            <div class="channel-count">${channel.member_count || 0}명 참여중</div>
+          </div>
+        `;
+        
+        item.addEventListener('click', () => {
+          closeChannelSelectModal();
+          addChannelFromList({
+            id: channel.id,
+            name: channel.name,
+            isPrivate: channel.has_password === 1,
+            memberCount: channel.member_count || 0,
+            ownerId: channel.owner_id
+          });
+        });
+        
+        list.appendChild(item);
+      });
+    }
+    
+    modal.classList.add('active');
+  } catch (error) {
+    alert('채널 목록을 불러오는데 실패했습니다.');
+  }
+}
+
+function closeChannelSelectModal() {
+  document.getElementById('channelSelectModal').classList.remove('active');
 }
