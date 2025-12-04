@@ -52,7 +52,6 @@ document.addEventListener('DOMContentLoaded', () => {
   isCheckingAuth = false;
   
   initializeUI();
-  connectWebSocket();
   loadGuilds();
   loadChannels();
   startMemberCountUpdate();
@@ -60,12 +59,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // ✅ 채팅 오버레이에서 인원수 업데이트 수신
   ipcRenderer.on('channel-member-count-updated', (event, data) => {
     const { channelId, count } = data;
-    const el = document.querySelector(`.channel-member-count[data-channel-id="${channelId}"]`);
-    if (el) {
-      el.textContent = `${count}명`;
-    }
+    updateChannelMemberCountUI(channelId, count);
   });
 });
+
+// ✅ 채널 인원수 UI 업데이트 헬퍼
+function updateChannelMemberCountUI(channelId, count) {
+  const el = document.querySelector(`.channel-member-count[data-channel-id="${channelId}"]`);
+  if (el) {
+    el.textContent = `${count}명`;
+  }
+}
 
 // 사용자 데이터 로드
 function loadUserData() {
@@ -280,8 +284,8 @@ function openGuildSelectModal() {
     item.className = 'guild-select-item';
     item.dataset.index = index;
     
-    const shortName = guild.shortName || guild.name;
-    const shortNameColor = guild.shortNameColor || '#667eea';
+    const shortName = guild.shortName || guild.short_name || guild.name;
+    const shortNameColor = guild.shortNameColor || guild.short_name_color || '#667eea';
     const isCurrentGuild = currentUser.guild === shortName;
     
     if (isCurrentGuild) {
@@ -349,8 +353,8 @@ function confirmGuildSelect() {
     guildId = null;
   } else {
     const selectedGuild = guilds[selectedGuildIndex];
-    guildShortName = selectedGuild.shortName || selectedGuild.name;
-    guildShortNameColor = selectedGuild.shortNameColor || '#667eea';
+    guildShortName = selectedGuild.shortName || selectedGuild.short_name || selectedGuild.name;
+    guildShortNameColor = selectedGuild.shortNameColor || selectedGuild.short_name_color || '#667eea';
     guildId = selectedGuild.id;
   }
   
@@ -373,27 +377,38 @@ function confirmGuildSelect() {
 
 // ========== 길드 관련 ==========
 
+// ✅ 길드 로드 - 서버 우선, 정규화 적용
 function loadGuilds() {
-  const localGuilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-  renderGuilds(localGuilds);
-  
+  // 먼저 서버에서 로드 시도
   fetch(`${API_BASE}/guilds`)
-    .then(res => res.ok ? res.json() : Promise.reject())
-    .then(serverGuilds => {
-      if (serverGuilds && serverGuilds.length > 0) {
-        const mergedGuilds = serverGuilds.map(sg => {
-          const local = localGuilds.find(lg => String(lg.id) === String(sg.id));
-          return {
-            ...sg,
-            shortName: sg.short_name || sg.shortName || (local ? local.shortName : null),
-            shortNameColor: sg.short_name_color || sg.shortNameColor || (local ? local.shortNameColor : '#667eea')
-          };
-        });
-        localStorage.setItem('guilds', JSON.stringify(mergedGuilds));
-        renderGuilds(mergedGuilds);
-      }
+    .then(res => {
+      if (!res.ok) throw new Error('서버 응답 오류');
+      return res.json();
     })
-    .catch(() => console.log('서버 길드 로드 실패, 로컬 사용'));
+    .then(serverGuilds => {
+      // ✅ 서버 데이터를 정규화 (snake_case -> camelCase)
+      const normalizedGuilds = (serverGuilds || []).map(sg => ({
+        id: sg.id,
+        shortName: sg.short_name || sg.shortName || '',
+        shortNameColor: sg.short_name_color || sg.shortNameColor || '#667eea',
+        name: sg.name,
+        faction: sg.faction,
+        recruitment: sg.recruitment,
+        description: sg.description,
+        contact: sg.contact,
+        logo: sg.logo,
+        owner_id: sg.owner_id
+      }));
+      
+      localStorage.setItem('guilds', JSON.stringify(normalizedGuilds));
+      renderGuilds(normalizedGuilds);
+      console.log('✅ 서버에서 길드 로드 완료:', normalizedGuilds.length);
+    })
+    .catch(err => {
+      console.log('⚠️ 서버 길드 로드 실패, 로컬 사용:', err.message);
+      const localGuilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+      renderGuilds(localGuilds);
+    });
 }
 
 function renderGuilds(guilds) {
@@ -415,26 +430,29 @@ function createGuildElement(guild) {
   item.className = 'guild-item';
   item.dataset.guildId = guild.id;
   
+  const shortName = guild.shortName || guild.short_name || guild.name;
+  const shortNameColor = guild.shortNameColor || guild.short_name_color || '#667eea';
+  
   const icon = document.createElement('div');
   icon.className = 'guild-icon';
   if (guild.logo) {
     const img = document.createElement('img');
     img.src = guild.logo;
-    img.onerror = () => { icon.textContent = (guild.shortName || guild.name || 'G')[0]; };
+    img.onerror = () => { icon.textContent = (shortName || 'G')[0]; };
     icon.appendChild(img);
   } else {
-    icon.textContent = (guild.shortName || guild.name || 'G')[0];
+    icon.textContent = (shortName || 'G')[0];
   }
   
   const info = document.createElement('div');
   info.className = 'guild-info';
   
   // ✅ 약어 색상 적용
-  if (guild.shortName) {
+  if (shortName) {
     const shortNameEl = document.createElement('div');
     shortNameEl.className = 'guild-short-name';
-    shortNameEl.textContent = `[${guild.shortName}]`;
-    shortNameEl.style.color = guild.shortNameColor || '#667eea';
+    shortNameEl.textContent = `[${shortName}]`;
+    shortNameEl.style.color = shortNameColor;
     info.appendChild(shortNameEl);
   }
   
@@ -580,28 +598,10 @@ function submitGuild() {
       return res.json();
     })
     .then(result => {
-      const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-      
-      if (editId) {
-        // 수정
-        const index = guilds.findIndex(g => String(g.id) === String(editId));
-        if (index > -1) {
-          guilds[index] = { ...guilds[index], ...guildData, id: editId };
-        }
-      } else {
-        // 신규 - 서버에서 받은 ID 사용
-        guilds.push({
-          id: result.guildId,
-          ...guildData,
-          owner_id: currentUser.discordId,
-          created_at: new Date().toISOString()
-        });
-      }
-      
-      localStorage.setItem('guilds', JSON.stringify(guilds));
       closeGuildModal();
-      renderGuilds(guilds);
       alert(editId ? '길드가 수정되었습니다!' : '길드가 등록되었습니다!');
+      // ✅ 서버에서 새로 로드 (동기화 보장)
+      loadGuilds();
     })
     .catch(err => {
       console.error('서버 저장 실패:', err);
@@ -633,10 +633,13 @@ function submitGuild() {
 function editGuild(guild) {
   guildLogoData = guild.logo || null;
   
+  const shortName = guild.shortName || guild.short_name || '';
+  const shortNameColor = guild.shortNameColor || guild.short_name_color || '#667eea';
+  
   document.getElementById('guildModalTitle').textContent = '길드 게시판 수정';
   document.getElementById('guildEditId').value = guild.id;
-  document.getElementById('guildShortName').value = guild.shortName || '';
-  document.getElementById('guildShortNameColor').value = guild.shortNameColor || '#667eea';
+  document.getElementById('guildShortName').value = shortName;
+  document.getElementById('guildShortNameColor').value = shortNameColor;
   document.getElementById('guildName').value = guild.name || '';
   document.getElementById('guildFaction').value = guild.faction || '';
   document.getElementById('guildRecruitment').value = guild.recruitment || '모집중';
@@ -657,20 +660,23 @@ function openGuildDetailModal(guild) {
   const logoEl = document.getElementById('guildDetailLogo');
   logoEl.innerHTML = '';
   
+  const shortName = guild.shortName || guild.short_name || '';
+  const shortNameColor = guild.shortNameColor || guild.short_name_color || '#667eea';
+  
   if (guild.logo) {
     const img = document.createElement('img');
     img.src = guild.logo;
     logoEl.appendChild(img);
   } else {
-    logoEl.textContent = (guild.shortName || guild.name || 'G')[0];
+    logoEl.textContent = (shortName || guild.name || 'G')[0];
   }
   
   const shortEl = document.getElementById('guildDetailShort');
-  shortEl.textContent = guild.shortName || '';
-  shortEl.style.color = guild.shortNameColor || '#667eea';
+  shortEl.textContent = shortName || '';
+  shortEl.style.color = shortNameColor;
   
   document.getElementById('guildDetailFull').textContent = guild.name || '-';
-  document.getElementById('guildDetailFull').style.display = guild.shortName ? 'block' : 'none';
+  document.getElementById('guildDetailFull').style.display = shortName ? 'block' : 'none';
   document.getElementById('guildDetailFaction').textContent = guild.faction || '-';
   document.getElementById('guildDetailRecruitment').textContent = guild.recruitment || '-';
   document.getElementById('guildDetailDescription').textContent = guild.description || '-';
@@ -685,19 +691,23 @@ function closeGuildDetailModal() {
 
 // ========== 채널 관련 ==========
 
+// ✅ 채널 로드 - 서버 우선
 function loadChannels() {
-  const localChannels = JSON.parse(localStorage.getItem('channels') || '[]');
-  renderChannels(localChannels);
-  
   fetch(`${API_BASE}/channels`)
-    .then(res => res.ok ? res.json() : Promise.reject())
-    .then(serverChannels => {
-      if (serverChannels && serverChannels.length > 0) {
-        localStorage.setItem('channels', JSON.stringify(serverChannels));
-        renderChannels(serverChannels);
-      }
+    .then(res => {
+      if (!res.ok) throw new Error('서버 응답 오류');
+      return res.json();
     })
-    .catch(() => console.log('서버 채널 로드 실패, 로컬 사용'));
+    .then(serverChannels => {
+      localStorage.setItem('channels', JSON.stringify(serverChannels || []));
+      renderChannels(serverChannels || []);
+      console.log('✅ 서버에서 채널 로드 완료:', (serverChannels || []).length);
+    })
+    .catch(err => {
+      console.log('⚠️ 서버 채널 로드 실패, 로컬 사용:', err.message);
+      const localChannels = JSON.parse(localStorage.getItem('channels') || '[]');
+      renderChannels(localChannels);
+    });
 }
 
 function renderChannels(channels) {
@@ -873,41 +883,10 @@ function submitChannel() {
       return res.json();
     })
     .then(result => {
-      const channels = JSON.parse(localStorage.getItem('channels') || '[]');
-      
-      if (editId) {
-        // 수정
-        const index = channels.findIndex(c => String(c.id) === String(editId));
-        if (index > -1) {
-          channels[index] = {
-            ...channels[index],
-            name,
-            password: password || null,
-            hasPassword: !!password,
-            has_password: password ? 1 : 0,
-            logo: channelLogoData || channels[index].logo
-          };
-        }
-      } else {
-        // 신규 - 서버에서 받은 ID 사용
-        channels.push({
-          id: result.channelId,
-          name,
-          password: password || null,
-          hasPassword: !!password,
-          has_password: password ? 1 : 0,
-          logo: channelLogoData,
-          owner_id: currentUser.discordId,
-          memberCount: 0,
-          member_count: 0,
-          created_at: new Date().toISOString()
-        });
-      }
-      
-      localStorage.setItem('channels', JSON.stringify(channels));
       closeChannelModal();
-      renderChannels(channels);
       alert(editId ? '채널이 수정되었습니다!' : '채널이 등록되었습니다!');
+      // ✅ 서버에서 새로 로드 (동기화 보장)
+      loadChannels();
     })
     .catch(err => {
       console.error('서버 저장 실패:', err);
@@ -995,7 +974,14 @@ function joinPasswordProtectedChannel(channel) {
 function joinChannel(channel) {
   // ✅ 현재 사용자의 길드 정보도 함께 전달
   const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-  const userGuild = guilds.find(g => g.shortName === currentUser.guild || g.name === currentUser.guild);
+  const userGuild = guilds.find(g => 
+    (g.shortName || g.short_name) === currentUser.guild || 
+    g.name === currentUser.guild
+  );
+  
+  const guildColor = userGuild 
+    ? (userGuild.shortNameColor || userGuild.short_name_color || '#667eea')
+    : '#667eea';
   
   ipcRenderer.send('open-chat-overlay', {
     id: channel.id,
@@ -1010,7 +996,7 @@ function joinChannel(channel) {
       nickname: currentUser.customNickname,
       avatar: currentUser.avatar,
       guild: currentUser.guild,
-      guildColor: userGuild ? userGuild.shortNameColor : '#667eea',
+      guildColor: guildColor,
       isSuperAdmin: isSuperAdmin()
     }
   });
@@ -1056,59 +1042,73 @@ function closeDeleteModal() {
 }
 
 function deleteGuild(guildId) {
-  const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-  const filtered = guilds.filter(g => String(g.id) !== String(guildId));
-  localStorage.setItem('guilds', JSON.stringify(filtered));
-  
-  renderGuilds(filtered);
-  alert('길드가 삭제되었습니다!');
-  
+  // ✅ 서버에서 먼저 삭제 시도
   fetch(`${API_BASE}/guilds/${guildId}`, { method: 'DELETE' })
-    .catch(err => console.log('서버 동기화 실패:', err.message));
+    .then(res => {
+      if (!res.ok) throw new Error('서버 삭제 실패');
+      return res.json();
+    })
+    .then(() => {
+      alert('길드가 삭제되었습니다!');
+      loadGuilds(); // 서버에서 새로 로드
+    })
+    .catch(err => {
+      console.log('서버 삭제 실패, 로컬만 삭제:', err.message);
+      
+      const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
+      const filtered = guilds.filter(g => String(g.id) !== String(guildId));
+      localStorage.setItem('guilds', JSON.stringify(filtered));
+      renderGuilds(filtered);
+      alert('길드가 삭제되었습니다! (오프라인)');
+    });
 }
 
 function deleteChannel(channelId) {
-  const channels = JSON.parse(localStorage.getItem('channels') || '[]');
-  const filtered = channels.filter(c => String(c.id) !== String(channelId));
-  localStorage.setItem('channels', JSON.stringify(filtered));
-  
-  renderChannels(filtered);
-  alert('채널이 삭제되었습니다!');
-  
+  // ✅ 서버에서 먼저 삭제 시도
   fetch(`${API_BASE}/channels/${channelId}`, { method: 'DELETE' })
-    .catch(err => console.log('서버 동기화 실패:', err.message));
+    .then(res => {
+      if (!res.ok) throw new Error('서버 삭제 실패');
+      return res.json();
+    })
+    .then(() => {
+      alert('채널이 삭제되었습니다!');
+      loadChannels(); // 서버에서 새로 로드
+    })
+    .catch(err => {
+      console.log('서버 삭제 실패, 로컬만 삭제:', err.message);
+      
+      const channels = JSON.parse(localStorage.getItem('channels') || '[]');
+      const filtered = channels.filter(c => String(c.id) !== String(channelId));
+      localStorage.setItem('channels', JSON.stringify(filtered));
+      renderChannels(filtered);
+      alert('채널이 삭제되었습니다! (오프라인)');
+    });
 }
 
 // ========== 기타 ==========
 
 function startMemberCountUpdate() {
-  // ✅ 3초마다 업데이트 (더 빠른 반영)
+  // ✅ 5초마다 업데이트
   memberCountUpdateInterval = setInterval(() => {
     fetch(`${API_BASE}/channels/member-counts`)
       .then(res => res.ok ? res.json() : [])
       .then(counts => {
-        counts.forEach(({ channelId, count }) => {
-          const el = document.querySelector(`.channel-member-count[data-channel-id="${channelId}"]`);
-          if (el) el.textContent = `${count}명`;
+        (counts || []).forEach(({ channelId, count }) => {
+          updateChannelMemberCountUI(channelId, count);
         });
       })
       .catch(() => {});
-  }, 3000);
+  }, 5000);
   
   // 즉시 1회 실행
   fetch(`${API_BASE}/channels/member-counts`)
     .then(res => res.ok ? res.json() : [])
     .then(counts => {
-      counts.forEach(({ channelId, count }) => {
-        const el = document.querySelector(`.channel-member-count[data-channel-id="${channelId}"]`);
-        if (el) el.textContent = `${count}명`;
+      (counts || []).forEach(({ channelId, count }) => {
+        updateChannelMemberCountUI(channelId, count);
       });
     })
     .catch(() => {});
-}
-
-function connectWebSocket() {
-  console.log('WebSocket 연결 준비 중...');
 }
 
 function logout() {

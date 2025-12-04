@@ -11,19 +11,24 @@ export class ChatRoom {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    this.sessions = new Map(); // { userId: session }
-    this.channelMembers = new Map(); // { channelId: Map(userId -> userInfo) }
+    this.sessions = new Map(); // { visitorId: session }
+    this.channelMembers = new Map(); // { visitorId: userInfo }
+    this.channelId = null;
   }
   
   async fetch(request) {
     const url = new URL(request.url);
     
-    if (request.headers.get('Upgrade') === 'websocket') {
-      return this.handleWebSocket(request);
+    // 인원수 조회 API
+    if (url.pathname === '/member-count') {
+      const count = this.channelMembers.size;
+      return new Response(JSON.stringify({ count }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
     
-    if (url.pathname.startsWith('/messages')) {
-      return this.handleMessages(request);
+    if (request.headers.get('Upgrade') === 'websocket') {
+      return this.handleWebSocket(request);
     }
     
     return new Response('Not found', { status: 404 });
@@ -33,10 +38,13 @@ export class ChatRoom {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     
+    // ✅ 고유한 방문자 ID 생성 (세션 충돌 방지)
+    const visitorId = crypto.randomUUID();
+    
     const session = {
+      visitorId,
       webSocket: server,
-      userId: null,
-      sessionId: null,
+      odiscordId: null,
       channelId: null,
       nickname: null,
       avatar: null,
@@ -75,24 +83,21 @@ export class ChatRoom {
   
   // ✅ 연결 해제 처리
   handleDisconnect(session) {
-    if (session.sessionId) {
-      this.sessions.delete(session.sessionId);
-    }
-    
-    if (session.channelId && session.userId) {
-      const members = this.channelMembers.get(session.channelId);
-      if (members) {
-        members.delete(session.userId);
-        
-        // 퇴장 알림 브로드캐스트
-        this.broadcast(session.channelId, {
+    if (session.visitorId) {
+      this.sessions.delete(session.visitorId);
+      this.channelMembers.delete(session.visitorId);
+      
+      // 퇴장 알림 브로드캐스트
+      if (session.nickname) {
+        this.broadcast({
           type: 'user_left',
-          userId: session.userId,
+          odiscordId: session.discordId,
+          visitorId: session.visitorId,
           nickname: session.nickname
-        }, session.userId);
+        }, session.visitorId);
         
         // ✅ 인원수 브로드캐스트
-        this.broadcastMemberCount(session.channelId);
+        this.broadcastMemberCount();
       }
     }
   }
@@ -108,6 +113,9 @@ export class ChatRoom {
       case 'leave':
         await this.handleLeave(session, data);
         break;
+      case 'ping':
+        session.webSocket.send(JSON.stringify({ type: 'pong' }));
+        break;
       case 'admin_action':
         await this.handleAdminAction(session, data);
         break;
@@ -122,6 +130,9 @@ export class ChatRoom {
       session.webSocket.send(JSON.stringify({ type: 'error', message: 'Invalid user data' }));
       return;
     }
+    
+    // 채널 ID 저장
+    this.channelId = channelId;
     
     // 입장금지 확인
     try {
@@ -143,8 +154,7 @@ export class ChatRoom {
     }
     
     // 세션 설정
-    session.userId = user.discordId;
-    session.sessionId = `${channelId}-${user.discordId}`;
+    session.discordId = user.discordId;
     session.channelId = channelId;
     session.nickname = user.nickname || 'Unknown';
     session.avatar = user.avatar || null;
@@ -183,15 +193,12 @@ export class ChatRoom {
       // 무시
     }
     
-    // 세션 저장
-    this.sessions.set(session.sessionId, session);
+    // ✅ 세션 저장 (고유 visitorId 사용)
+    this.sessions.set(session.visitorId, session);
     
-    // 채널 멤버 맵에 추가
-    if (!this.channelMembers.has(channelId)) {
-      this.channelMembers.set(channelId, new Map());
-    }
-    
-    this.channelMembers.get(channelId).set(user.discordId, {
+    // ✅ 채널 멤버 맵에 추가 (고유 visitorId 사용)
+    this.channelMembers.set(session.visitorId, {
+      visitorId: session.visitorId,
       discordId: user.discordId,
       nickname: session.nickname,
       guild: session.guild,
@@ -203,35 +210,24 @@ export class ChatRoom {
       isSuperAdmin: session.isSuperAdmin
     });
     
-    // DB에 멤버 추가/업데이트
-    try {
-      await this.env.DB.prepare(`
-        INSERT INTO channel_members (channel_id, user_id, role, nickname_color)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(channel_id, user_id) DO UPDATE SET
-          nickname_color = COALESCE(channel_members.nickname_color, excluded.nickname_color)
-      `).bind(channelId, user.discordId, session.role, session.nicknameColor).run();
-    } catch (e) {
-      // 무시
-    }
-    
     // 입장 알림 브로드캐스트
-    this.broadcast(channelId, {
+    this.broadcast({
       type: 'user_joined',
       user: {
+        visitorId: session.visitorId,
         discordId: user.discordId,
         nickname: session.nickname,
         guild: session.guild,
         guildColor: session.guildColor,
         role: session.role
       }
-    }, user.discordId);
+    }, session.visitorId);
     
     // ✅ 인원수 브로드캐스트
-    this.broadcastMemberCount(channelId);
+    this.broadcastMemberCount();
     
     // 참여자 목록 전송
-    const membersList = Array.from(this.channelMembers.get(channelId).values());
+    const membersList = Array.from(this.channelMembers.values());
     session.webSocket.send(JSON.stringify({
       type: 'members_list',
       members: membersList
@@ -260,7 +256,7 @@ export class ChatRoom {
   
   // ✅ 채팅 메시지 처리
   async handleChatMessage(session, data) {
-    if (!session.channelId || !session.userId) return;
+    if (!session.channelId || !session.discordId) return;
     
     // 뮤트 확인
     if (session.isMuted) {
@@ -276,18 +272,18 @@ export class ChatRoom {
       await this.env.DB.prepare(`
         INSERT INTO messages (channel_id, user_id, content, message_type)
         VALUES (?, ?, ?, 'chat')
-      `).bind(session.channelId, session.userId, data.content).run();
+      `).bind(session.channelId, session.discordId, data.content).run();
     } catch (e) {
       // 무시
     }
     
-    // 브로드캐스트
-    this.broadcast(session.channelId, {
+    // ✅ 모든 사용자에게 브로드캐스트 (본인 포함)
+    this.broadcast({
       type: 'message',
       author: session.nickname,
-      authorId: session.userId,
+      authorId: session.discordId,
       authorColor: session.nicknameColor,
-      avatar: session.avatar,
+      avatar: data.avatar || session.avatar,
       guild: session.guild,
       guildColor: session.guildColor,
       content: data.content,
@@ -311,8 +307,17 @@ export class ChatRoom {
       return;
     }
     
-    const members = this.channelMembers.get(channelId);
-    const targetMember = members?.get(targetUserId);
+    // visitorId로 타겟 찾기
+    let targetVisitorId = null;
+    let targetMember = null;
+    
+    for (const [vid, member] of this.channelMembers) {
+      if (member.discordId === targetUserId) {
+        targetVisitorId = vid;
+        targetMember = member;
+        break;
+      }
+    }
     
     switch (action) {
       case 'change_color':
@@ -328,7 +333,7 @@ export class ChatRoom {
           } catch (e) {}
           
           // 브로드캐스트
-          this.broadcast(channelId, {
+          this.broadcast({
             type: 'color_changed',
             targetUserId,
             color: data.color
@@ -345,7 +350,7 @@ export class ChatRoom {
             await this.env.DB.prepare(`
               INSERT INTO channel_warnings (channel_id, user_id, warned_by, reason)
               VALUES (?, ?, ?, ?)
-            `).bind(channelId, targetUserId, session.userId, data.reason || '').run();
+            `).bind(channelId, targetUserId, session.discordId, data.reason || '').run();
             
             await this.env.DB.prepare(`
               UPDATE channel_members SET warnings = warnings + 1 
@@ -365,17 +370,17 @@ export class ChatRoom {
             } catch (e) {}
             
             // 타겟 세션 업데이트
-            const targetSession = this.sessions.get(`${channelId}-${targetUserId}`);
+            const targetSession = this.sessions.get(targetVisitorId);
             if (targetSession) {
               targetSession.isMuted = true;
             }
             
-            this.broadcast(channelId, {
+            this.broadcast({
               type: 'warning',
               message: `⚠️ ${targetMember.nickname}님이 경고 3회 누적으로 채팅 금지되었습니다.`
             });
           } else {
-            this.broadcast(channelId, {
+            this.broadcast({
               type: 'warning',
               message: `⚠️ ${targetMember.nickname}님에게 경고가 부여되었습니다. (${targetMember.warnings}/3)`
             });
@@ -384,20 +389,23 @@ export class ChatRoom {
         break;
         
       case 'kick':
-        const kickSession = this.sessions.get(`${channelId}-${targetUserId}`);
+        const kickSession = this.sessions.get(targetVisitorId);
         if (kickSession) {
           kickSession.webSocket.send(JSON.stringify({ type: 'kicked', targetUserId }));
           kickSession.webSocket.close();
         }
         
-        if (members) members.delete(targetUserId);
+        if (targetVisitorId) {
+          this.sessions.delete(targetVisitorId);
+          this.channelMembers.delete(targetVisitorId);
+        }
         
-        this.broadcast(channelId, {
+        this.broadcast({
           type: 'warning',
           message: `👢 ${targetMember?.nickname || 'Unknown'}님이 추방되었습니다.`
         });
         
-        this.broadcastMemberCount(channelId);
+        this.broadcastMemberCount();
         break;
         
       case 'ban':
@@ -409,23 +417,26 @@ export class ChatRoom {
             ON CONFLICT(channel_id, user_id) DO UPDATE SET
               reason = excluded.reason,
               banned_at = CURRENT_TIMESTAMP
-          `).bind(channelId, targetUserId, session.userId, data.reason || '').run();
+          `).bind(channelId, targetUserId, session.discordId, data.reason || '').run();
         } catch (e) {}
         
-        const banSession = this.sessions.get(`${channelId}-${targetUserId}`);
+        const banSession = this.sessions.get(targetVisitorId);
         if (banSession) {
           banSession.webSocket.send(JSON.stringify({ type: 'banned', targetUserId }));
           banSession.webSocket.close();
         }
         
-        if (members) members.delete(targetUserId);
+        if (targetVisitorId) {
+          this.sessions.delete(targetVisitorId);
+          this.channelMembers.delete(targetVisitorId);
+        }
         
-        this.broadcast(channelId, {
+        this.broadcast({
           type: 'warning',
           message: `🚫 ${targetMember?.nickname || 'Unknown'}님이 입장금지되었습니다.`
         });
         
-        this.broadcastMemberCount(channelId);
+        this.broadcastMemberCount();
         break;
         
       case 'set_role':
@@ -439,7 +450,7 @@ export class ChatRoom {
             `).bind(data.role, channelId, targetUserId).run();
           } catch (e) {}
           
-          const targetRoleSession = this.sessions.get(`${channelId}-${targetUserId}`);
+          const targetRoleSession = this.sessions.get(targetVisitorId);
           if (targetRoleSession) {
             targetRoleSession.role = data.role;
           }
@@ -448,7 +459,7 @@ export class ChatRoom {
             ? `🛡️ ${targetMember.nickname}님이 부관리자로 지정되었습니다.`
             : `🛡️ ${targetMember.nickname}님의 부관리자 권한이 해제되었습니다.`;
           
-          this.broadcast(channelId, { type: 'warning', message: roleMsg });
+          this.broadcast({ type: 'warning', message: roleMsg });
         }
         break;
         
@@ -464,13 +475,13 @@ export class ChatRoom {
             `).bind(channelId, targetUserId).run();
           } catch (e) {}
           
-          const targetUnmuteSession = this.sessions.get(`${channelId}-${targetUserId}`);
+          const targetUnmuteSession = this.sessions.get(targetVisitorId);
           if (targetUnmuteSession) {
             targetUnmuteSession.isMuted = false;
             targetUnmuteSession.warnings = 0;
           }
           
-          this.broadcast(channelId, {
+          this.broadcast({
             type: 'warning',
             message: `🔊 ${targetMember.nickname}님의 채팅 금지가 해제되었습니다.`
           });
@@ -479,20 +490,18 @@ export class ChatRoom {
     }
     
     // 참여자 목록 업데이트 브로드캐스트
-    if (members) {
-      this.broadcast(channelId, {
-        type: 'members_list',
-        members: Array.from(members.values())
-      });
-    }
+    this.broadcast({
+      type: 'members_list',
+      members: Array.from(this.channelMembers.values())
+    });
   }
   
-  // ✅ 브로드캐스트
-  broadcast(channelId, message, excludeUserId = null) {
+  // ✅ 브로드캐스트 (excludeVisitorId로 변경)
+  broadcast(message, excludeVisitorId = null) {
     const messageStr = JSON.stringify(message);
     
-    for (const [sessionId, session] of this.sessions) {
-      if (session.channelId === channelId && session.userId !== excludeUserId) {
+    for (const [visitorId, session] of this.sessions) {
+      if (visitorId !== excludeVisitorId) {
         try {
           session.webSocket.send(messageStr);
         } catch (error) {
@@ -503,50 +512,20 @@ export class ChatRoom {
   }
   
   // ✅ 인원수 브로드캐스트
-  broadcastMemberCount(channelId) {
-    const members = this.channelMembers.get(channelId);
-    const count = members ? members.size : 0;
+  broadcastMemberCount() {
+    const count = this.channelMembers.size;
     
-    // 해당 채널의 모든 세션에 전송
-    this.broadcast(channelId, {
+    const message = JSON.stringify({
       type: 'member_count',
-      channelId: channelId,
+      channelId: this.channelId,
       count: count
     });
     
-    // ✅ 전역 이벤트 (다른 채널 탭에서도 업데이트 가능하도록)
-    // 모든 세션에 전송
-    const globalMessage = JSON.stringify({
-      type: 'global_member_count',
-      channelId: channelId,
-      count: count
-    });
-    
-    for (const [sessionId, session] of this.sessions) {
+    for (const [visitorId, session] of this.sessions) {
       try {
-        session.webSocket.send(globalMessage);
+        session.webSocket.send(message);
       } catch (error) {}
     }
-  }
-  
-  async handleMessages(request) {
-    const url = new URL(request.url);
-    const channelId = url.searchParams.get('channelId');
-    const limit = parseInt(url.searchParams.get('limit') || '50');
-    
-    const { results } = await this.env.DB.prepare(`
-      SELECT m.*, u.custom_nickname, g.short_name, g.short_name_color
-      FROM messages m
-      LEFT JOIN users u ON m.user_id = u.discord_id
-      LEFT JOIN guilds g ON u.guild_id = g.id
-      WHERE m.channel_id = ?
-      ORDER BY m.created_at DESC
-      LIMIT ?
-    `).bind(channelId, limit).all();
-    
-    return new Response(JSON.stringify(results.reverse()), {
-      headers: { 'Content-Type': 'application/json' }
-    });
   }
 }
 
@@ -573,7 +552,8 @@ export default {
       const match = url.pathname.match(/^\/ws\/channel\/(.+)$/);
       const channelId = match ? match[1] : 'general';
       
-      const id = env.CHAT_ROOMS.idFromName(channelId);
+      // ✅ 채널별 Durable Object
+      const id = env.CHAT_ROOMS.idFromName(`channel-${channelId}`);
       const stub = env.CHAT_ROOMS.get(id);
       return stub.fetch(request);
     }
@@ -834,15 +814,25 @@ async function handleChannelsList(request, env, corsHeaders) {
   const { results } = await env.DB.prepare(`
     SELECT 
       c.id, c.name, c.logo, c.owner_id,
-      CASE WHEN c.password IS NOT NULL THEN 1 ELSE 0 END as has_password,
-      COUNT(cm.user_id) as member_count
+      CASE WHEN c.password IS NOT NULL THEN 1 ELSE 0 END as has_password
     FROM channels c
-    LEFT JOIN channel_members cm ON c.id = cm.channel_id
-    GROUP BY c.id
     ORDER BY c.created_at DESC
   `).all();
   
-  return new Response(JSON.stringify(results), {
+  // ✅ 각 채널의 실시간 인원수를 Durable Object에서 가져오기
+  const channelsWithCounts = await Promise.all(results.map(async (channel) => {
+    try {
+      const id = env.CHAT_ROOMS.idFromName(`channel-${channel.id}`);
+      const stub = env.CHAT_ROOMS.get(id);
+      const response = await stub.fetch(new Request('http://internal/member-count'));
+      const data = await response.json();
+      return { ...channel, member_count: data.count || 0 };
+    } catch (e) {
+      return { ...channel, member_count: 0 };
+    }
+  }));
+  
+  return new Response(JSON.stringify(channelsWithCounts), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
@@ -903,26 +893,40 @@ async function handleChannelVerify(request, env, corsHeaders) {
   });
 }
 
-// ✅ 실시간 인원수 API
+// ✅ 실시간 인원수 API (Durable Object에서 가져오기)
 async function handleMemberCounts(request, env, corsHeaders) {
-  const { results } = await env.DB.prepare(`
-    SELECT channel_id, COUNT(user_id) as count
-    FROM channel_members
-    GROUP BY channel_id
-  `).all();
+  const { results } = await env.DB.prepare(`SELECT id FROM channels`).all();
   
-  return new Response(JSON.stringify(results.map(r => ({
-    channelId: r.channel_id,
-    count: r.count
-  }))), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  const counts = await Promise.all(results.map(async (channel) => {
+    try {
+      const id = env.CHAT_ROOMS.idFromName(`channel-${channel.id}`);
+      const stub = env.CHAT_ROOMS.get(id);
+      const response = await stub.fetch(new Request(`http://internal/member-count?channelId=${channel.id}`));
+      const data = await response.json();
+      return { channelId: channel.id, count: data.count || 0 };
+    } catch (e) {
+      return { channelId: channel.id, count: 0 };
+    }
+  }));
+  
+  return new Response(JSON.stringify(counts), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
 }
 
 async function handleChannelMemberCount(request, env, corsHeaders, channelId) {
-  const result = await env.DB.prepare(`
-    SELECT COUNT(user_id) as count FROM channel_members WHERE channel_id = ?
-  `).bind(channelId).first();
-  
-  return new Response(JSON.stringify({ count: result?.count || 0 }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-  });
+  try {
+    const id = env.CHAT_ROOMS.idFromName(`channel-${channelId}`);
+    const stub = env.CHAT_ROOMS.get(id);
+    const response = await stub.fetch(new Request('http://internal/member-count'));
+    const data = await response.json();
+    
+    return new Response(JSON.stringify({ count: data.count || 0 }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ count: 0 }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
