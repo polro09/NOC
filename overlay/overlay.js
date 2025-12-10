@@ -220,6 +220,7 @@ function closeNicknameModal() {
   document.getElementById('nicknameModal').style.display = 'none';
 }
 
+// ✅ 닉네임 변경 - 서버에도 저장
 function confirmNicknameChange() {
   const newNickname = document.getElementById('newNicknameInput').value.trim();
   
@@ -245,6 +246,7 @@ function confirmNicknameChange() {
   closeNicknameModal();
   alert('닉네임이 변경되었습니다!');
   
+  // ✅ 서버에 저장
   fetch(`${API_BASE}/users/profile`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -337,6 +339,7 @@ function closeGuildSelectModal() {
   selectedGuildIndex = null;
 }
 
+// ✅ 길드 선택 확인 - 서버에도 저장
 function confirmGuildSelect() {
   if (selectedGuildIndex === null) {
     alert('길드를 선택해주세요.');
@@ -368,6 +371,7 @@ function confirmGuildSelect() {
   closeGuildSelectModal();
   alert(`소속 길드가 [${guildShortName}](으)로 변경되었습니다!`);
   
+  // ✅ 서버에 저장
   fetch(`${API_BASE}/users/profile`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -379,14 +383,12 @@ function confirmGuildSelect() {
 
 // ✅ 길드 로드 - 서버 우선, 정규화 적용
 function loadGuilds() {
-  // 먼저 서버에서 로드 시도
   fetch(`${API_BASE}/guilds`)
     .then(res => {
       if (!res.ok) throw new Error('서버 응답 오류');
       return res.json();
     })
     .then(serverGuilds => {
-      // ✅ 서버 데이터를 정규화 (snake_case -> camelCase)
       const normalizedGuilds = (serverGuilds || []).map(sg => ({
         id: sg.id,
         shortName: sg.short_name || sg.shortName || '',
@@ -447,7 +449,6 @@ function createGuildElement(guild) {
   const info = document.createElement('div');
   info.className = 'guild-info';
   
-  // ✅ 약어 색상 적용
   if (shortName) {
     const shortNameEl = document.createElement('div');
     shortNameEl.className = 'guild-short-name';
@@ -587,7 +588,6 @@ function submitGuild() {
   const url = editId ? `${API_BASE}/guilds/${editId}` : `${API_BASE}/guilds`;
   const method = editId ? 'PUT' : 'POST';
   
-  // ✅ 서버에 먼저 저장
   fetch(url, { 
     method, 
     headers: { 'Content-Type': 'application/json' }, 
@@ -600,33 +600,11 @@ function submitGuild() {
     .then(result => {
       closeGuildModal();
       alert(editId ? '길드가 수정되었습니다!' : '길드가 등록되었습니다!');
-      // ✅ 서버에서 새로 로드 (동기화 보장)
       loadGuilds();
     })
     .catch(err => {
       console.error('서버 저장 실패:', err);
-      
-      // ✅ 서버 실패 시 로컬에만 저장 (오프라인 모드)
-      const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-      
-      if (editId) {
-        const index = guilds.findIndex(g => String(g.id) === String(editId));
-        if (index > -1) {
-          guilds[index] = { ...guilds[index], ...guildData };
-        }
-      } else {
-        guilds.push({
-          id: `local_${Date.now()}`,
-          ...guildData,
-          owner_id: currentUser.discordId,
-          created_at: new Date().toISOString()
-        });
-      }
-      
-      localStorage.setItem('guilds', JSON.stringify(guilds));
-      closeGuildModal();
-      renderGuilds(guilds);
-      alert((editId ? '길드가 수정되었습니다!' : '길드가 등록되었습니다!') + '\n(오프라인 - 나중에 동기화됩니다)');
+      alert('서버 저장에 실패했습니다.');
     });
 }
 
@@ -691,7 +669,6 @@ function closeGuildDetailModal() {
 
 // ========== 채널 관련 ==========
 
-// ✅ 채널 로드 - 서버 우선
 function loadChannels() {
   fetch(`${API_BASE}/channels`)
     .then(res => {
@@ -872,7 +849,6 @@ function submitChannel() {
   const url = editId ? `${API_BASE}/channels/${editId}` : `${API_BASE}/channels`;
   const method = editId ? 'PUT' : 'POST';
   
-  // ✅ 서버에 먼저 저장
   fetch(url, { 
     method, 
     headers: { 'Content-Type': 'application/json' }, 
@@ -885,46 +861,11 @@ function submitChannel() {
     .then(result => {
       closeChannelModal();
       alert(editId ? '채널이 수정되었습니다!' : '채널이 등록되었습니다!');
-      // ✅ 서버에서 새로 로드 (동기화 보장)
       loadChannels();
     })
     .catch(err => {
       console.error('서버 저장 실패:', err);
-      
-      // ✅ 서버 실패 시 로컬에만 저장 (오프라인 모드)
-      const channels = JSON.parse(localStorage.getItem('channels') || '[]');
-      
-      if (editId) {
-        const index = channels.findIndex(c => String(c.id) === String(editId));
-        if (index > -1) {
-          channels[index] = {
-            ...channels[index],
-            name,
-            password: password || null,
-            hasPassword: !!password,
-            has_password: password ? 1 : 0,
-            logo: channelLogoData || channels[index].logo
-          };
-        }
-      } else {
-        channels.push({
-          id: `local_${Date.now()}`,
-          name,
-          password: password || null,
-          hasPassword: !!password,
-          has_password: password ? 1 : 0,
-          logo: channelLogoData,
-          owner_id: currentUser.discordId,
-          memberCount: 0,
-          member_count: 0,
-          created_at: new Date().toISOString()
-        });
-      }
-      
-      localStorage.setItem('channels', JSON.stringify(channels));
-      closeChannelModal();
-      renderChannels(channels);
-      alert((editId ? '채널이 수정되었습니다!' : '채널이 등록되었습니다!') + '\n(오프라인 - 나중에 동기화됩니다)');
+      alert('서버 저장에 실패했습니다.');
     });
 }
 
@@ -950,14 +891,6 @@ function joinPasswordProtectedChannel(channel) {
   const password = prompt(`🔒 비밀번호를 입력하세요 (채널: ${channel.name})`);
   if (!password) return;
   
-  const channels = JSON.parse(localStorage.getItem('channels') || '[]');
-  const localChannel = channels.find(c => String(c.id) === String(channel.id));
-  
-  if (localChannel && localChannel.password === password) {
-    joinChannel(channel);
-    return;
-  }
-  
   fetch(`${API_BASE}/channels/verify-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -971,18 +904,8 @@ function joinPasswordProtectedChannel(channel) {
     .catch(() => alert('비밀번호 검증에 실패했습니다.'));
 }
 
+// ✅ 채널 입장 - Discord ID만 전송
 function joinChannel(channel) {
-  // ✅ 현재 사용자의 길드 정보도 함께 전달
-  const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-  const userGuild = guilds.find(g => 
-    (g.shortName || g.short_name) === currentUser.guild || 
-    g.name === currentUser.guild
-  );
-  
-  const guildColor = userGuild 
-    ? (userGuild.shortNameColor || userGuild.short_name_color || '#667eea')
-    : '#667eea';
-  
   ipcRenderer.send('open-chat-overlay', {
     id: channel.id,
     name: channel.name,
@@ -990,15 +913,8 @@ function joinChannel(channel) {
     memberCount: channel.memberCount || 0,
     logo: channel.logo,
     ownerId: channel.ownerId,
-    // ✅ 사용자 정보
-    user: {
-      discordId: currentUser.discordId,
-      nickname: currentUser.customNickname,
-      avatar: currentUser.avatar,
-      guild: currentUser.guild,
-      guildColor: guildColor,
-      isSuperAdmin: isSuperAdmin()
-    }
+    // ✅ Discord ID만 전송 - 서버에서 나머지 정보 조회
+    discordId: currentUser.discordId
   });
   
   document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
@@ -1042,7 +958,6 @@ function closeDeleteModal() {
 }
 
 function deleteGuild(guildId) {
-  // ✅ 서버에서 먼저 삭제 시도
   fetch(`${API_BASE}/guilds/${guildId}`, { method: 'DELETE' })
     .then(res => {
       if (!res.ok) throw new Error('서버 삭제 실패');
@@ -1050,21 +965,15 @@ function deleteGuild(guildId) {
     })
     .then(() => {
       alert('길드가 삭제되었습니다!');
-      loadGuilds(); // 서버에서 새로 로드
+      loadGuilds();
     })
     .catch(err => {
-      console.log('서버 삭제 실패, 로컬만 삭제:', err.message);
-      
-      const guilds = JSON.parse(localStorage.getItem('guilds') || '[]');
-      const filtered = guilds.filter(g => String(g.id) !== String(guildId));
-      localStorage.setItem('guilds', JSON.stringify(filtered));
-      renderGuilds(filtered);
-      alert('길드가 삭제되었습니다! (오프라인)');
+      console.log('서버 삭제 실패:', err.message);
+      alert('삭제에 실패했습니다.');
     });
 }
 
 function deleteChannel(channelId) {
-  // ✅ 서버에서 먼저 삭제 시도
   fetch(`${API_BASE}/channels/${channelId}`, { method: 'DELETE' })
     .then(res => {
       if (!res.ok) throw new Error('서버 삭제 실패');
@@ -1072,23 +981,17 @@ function deleteChannel(channelId) {
     })
     .then(() => {
       alert('채널이 삭제되었습니다!');
-      loadChannels(); // 서버에서 새로 로드
+      loadChannels();
     })
     .catch(err => {
-      console.log('서버 삭제 실패, 로컬만 삭제:', err.message);
-      
-      const channels = JSON.parse(localStorage.getItem('channels') || '[]');
-      const filtered = channels.filter(c => String(c.id) !== String(channelId));
-      localStorage.setItem('channels', JSON.stringify(filtered));
-      renderChannels(filtered);
-      alert('채널이 삭제되었습니다! (오프라인)');
+      console.log('서버 삭제 실패:', err.message);
+      alert('삭제에 실패했습니다.');
     });
 }
 
 // ========== 기타 ==========
 
 function startMemberCountUpdate() {
-  // ✅ 5초마다 업데이트
   memberCountUpdateInterval = setInterval(() => {
     fetch(`${API_BASE}/channels/member-counts`)
       .then(res => res.ok ? res.json() : [])

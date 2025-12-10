@@ -44,16 +44,18 @@ export class ChatRoom {
     const session = {
       visitorId,
       webSocket: server,
-      odiscordId: null,
+      discordId: null,
       channelId: null,
       nickname: null,
       avatar: null,
+      avatarUrl: null,
       guild: null,
       guildColor: '#667eea',
       nicknameColor: '#ffffff',
       role: 'user',
       isMuted: false,
-      warnings: 0
+      warnings: 0,
+      isSuperAdmin: false
     };
     
     server.accept();
@@ -91,7 +93,7 @@ export class ChatRoom {
       if (session.nickname) {
         this.broadcast({
           type: 'user_left',
-          odiscordId: session.discordId,
+          discordId: session.discordId,
           visitorId: session.visitorId,
           nickname: session.nickname
         }, session.visitorId);
@@ -122,23 +124,60 @@ export class ChatRoom {
     }
   }
   
-  // ✅ 채널 입장
+  // ✅ 아바타 URL 생성 헬퍼
+  getAvatarUrl(discordId, avatar) {
+    if (!avatar) {
+      return `https://cdn.discordapp.com/embed/avatars/${parseInt(discordId || '0') % 5}.png`;
+    }
+    const extension = avatar.startsWith('a_') ? 'gif' : 'png';
+    return `https://cdn.discordapp.com/avatars/${discordId}/${avatar}.${extension}?size=128`;
+  }
+  
+  // ✅ 채널 입장 - 서버에서 Discord ID로 사용자 정보 조회
   async handleJoin(session, data) {
-    const { channelId, user } = data;
+    const { channelId, discordId } = data;
     
-    if (!user || !user.discordId) {
-      session.webSocket.send(JSON.stringify({ type: 'error', message: 'Invalid user data' }));
+    if (!discordId) {
+      session.webSocket.send(JSON.stringify({ type: 'error', message: 'Discord ID required' }));
       return;
     }
     
     // 채널 ID 저장
     this.channelId = channelId;
     
+    // ✅ 서버에서 사용자 정보 조회
+    let userInfo = null;
+    try {
+      userInfo = await this.env.DB.prepare(`
+        SELECT u.*, g.short_name as guild_short_name, g.short_name_color as guild_color
+        FROM users u
+        LEFT JOIN guilds g ON u.guild_id = g.id
+        WHERE u.discord_id = ?
+      `).bind(discordId).first();
+    } catch (e) {
+      console.error('User lookup error:', e);
+    }
+    
+    // ✅ 사용자 정보가 없으면 에러
+    if (!userInfo) {
+      session.webSocket.send(JSON.stringify({ 
+        type: 'error', 
+        message: 'User not found. Please login again.' 
+      }));
+      return;
+    }
+    
+    const nickname = userInfo.custom_nickname || userInfo.discord_username || 'Unknown';
+    const avatar = userInfo.avatar || null;
+    const avatarUrl = this.getAvatarUrl(discordId, avatar);
+    const guild = userInfo.guild_short_name || '없음';
+    const guildColor = userInfo.guild_color || '#667eea';
+    
     // 입장금지 확인
     try {
       const ban = await this.env.DB.prepare(`
         SELECT * FROM channel_bans WHERE channel_id = ? AND user_id = ?
-      `).bind(channelId, user.discordId).first();
+      `).bind(channelId, discordId).first();
       
       if (ban) {
         session.webSocket.send(JSON.stringify({ 
@@ -153,14 +192,15 @@ export class ChatRoom {
       // 테이블이 없을 수 있음, 무시
     }
     
-    // 세션 설정
-    session.discordId = user.discordId;
+    // 세션 설정 - 서버에서 조회한 정보 사용
+    session.discordId = discordId;
     session.channelId = channelId;
-    session.nickname = user.nickname || 'Unknown';
-    session.avatar = user.avatar || null;
-    session.guild = user.guild || '없음';
-    session.guildColor = user.guildColor || '#667eea';
-    session.isSuperAdmin = user.discordId === SUPER_ADMIN_ID;
+    session.nickname = nickname;
+    session.avatar = avatar;
+    session.avatarUrl = avatarUrl;
+    session.guild = guild;
+    session.guildColor = guildColor;
+    session.isSuperAdmin = discordId === SUPER_ADMIN_ID;
     
     // 채널 멤버 정보 가져오기
     try {
@@ -168,7 +208,7 @@ export class ChatRoom {
         SELECT role, nickname_color, warnings, is_muted 
         FROM channel_members 
         WHERE channel_id = ? AND user_id = ?
-      `).bind(channelId, user.discordId).first();
+      `).bind(channelId, discordId).first();
       
       if (memberInfo) {
         session.role = memberInfo.role || 'user';
@@ -186,7 +226,7 @@ export class ChatRoom {
         SELECT owner_id FROM channels WHERE id = ?
       `).bind(channelId).first();
       
-      if (channel && channel.owner_id === user.discordId) {
+      if (channel && channel.owner_id === discordId) {
         session.role = 'owner';
       }
     } catch (e) {
@@ -199,8 +239,10 @@ export class ChatRoom {
     // ✅ 채널 멤버 맵에 추가 (고유 visitorId 사용)
     this.channelMembers.set(session.visitorId, {
       visitorId: session.visitorId,
-      discordId: user.discordId,
+      discordId: discordId,
       nickname: session.nickname,
+      avatar: session.avatar,
+      avatarUrl: session.avatarUrl,
       guild: session.guild,
       guildColor: session.guildColor,
       nicknameColor: session.nicknameColor,
@@ -210,16 +252,33 @@ export class ChatRoom {
       isSuperAdmin: session.isSuperAdmin
     });
     
-    // 입장 알림 브로드캐스트
+    // ✅ 본인에게 자신의 정보 전송
+    session.webSocket.send(JSON.stringify({
+      type: 'joined',
+      user: {
+        visitorId: session.visitorId,
+        discordId: discordId,
+        nickname: session.nickname,
+        avatarUrl: session.avatarUrl,
+        guild: session.guild,
+        guildColor: session.guildColor,
+        role: session.role,
+        isSuperAdmin: session.isSuperAdmin
+      }
+    }));
+    
+    // 입장 알림 브로드캐스트 (본인 제외)
     this.broadcast({
       type: 'user_joined',
       user: {
         visitorId: session.visitorId,
-        discordId: user.discordId,
+        discordId: discordId,
         nickname: session.nickname,
+        avatarUrl: session.avatarUrl,
         guild: session.guild,
         guildColor: session.guildColor,
-        role: session.role
+        role: session.role,
+        isSuperAdmin: session.isSuperAdmin
       }
     }, session.visitorId);
     
@@ -236,7 +295,7 @@ export class ChatRoom {
     // 최근 메시지 전송
     try {
       const { results } = await this.env.DB.prepare(`
-        SELECT m.*, u.custom_nickname, g.short_name, g.short_name_color
+        SELECT m.*, u.custom_nickname, u.avatar as user_avatar, g.short_name, g.short_name_color
         FROM messages m
         LEFT JOIN users u ON m.user_id = u.discord_id
         LEFT JOIN guilds g ON u.guild_id = g.id
@@ -245,16 +304,22 @@ export class ChatRoom {
         LIMIT 50
       `).bind(channelId).all();
       
+      // 아바타 URL 추가
+      const messagesWithAvatar = results.map(msg => ({
+        ...msg,
+        avatarUrl: this.getAvatarUrl(msg.user_id, msg.user_avatar)
+      }));
+      
       session.webSocket.send(JSON.stringify({
         type: 'message_history',
-        messages: results.reverse()
+        messages: messagesWithAvatar.reverse()
       }));
     } catch (e) {
       // 무시
     }
   }
   
-  // ✅ 채팅 메시지 처리
+  // ✅ 채팅 메시지 처리 - 서버 세션 정보 사용
   async handleChatMessage(session, data) {
     if (!session.channelId || !session.discordId) return;
     
@@ -277,13 +342,13 @@ export class ChatRoom {
       // 무시
     }
     
-    // ✅ 모든 사용자에게 브로드캐스트 (본인 포함)
+    // ✅ 서버 세션의 정보로 메시지 브로드캐스트 (본인 포함)
     this.broadcast({
       type: 'message',
       author: session.nickname,
       authorId: session.discordId,
       authorColor: session.nicknameColor,
-      avatar: data.avatar || session.avatar,
+      avatar: session.avatarUrl,
       guild: session.guild,
       guildColor: session.guildColor,
       content: data.content,
@@ -327,9 +392,10 @@ export class ChatRoom {
           // DB 업데이트
           try {
             await this.env.DB.prepare(`
-              UPDATE channel_members SET nickname_color = ? 
-              WHERE channel_id = ? AND user_id = ?
-            `).bind(data.color, channelId, targetUserId).run();
+              INSERT INTO channel_members (channel_id, user_id, nickname_color)
+              VALUES (?, ?, ?)
+              ON CONFLICT(channel_id, user_id) DO UPDATE SET nickname_color = ?
+            `).bind(channelId, targetUserId, data.color, data.color).run();
           } catch (e) {}
           
           // 브로드캐스트
@@ -353,8 +419,9 @@ export class ChatRoom {
             `).bind(channelId, targetUserId, session.discordId, data.reason || '').run();
             
             await this.env.DB.prepare(`
-              UPDATE channel_members SET warnings = warnings + 1 
-              WHERE channel_id = ? AND user_id = ?
+              INSERT INTO channel_members (channel_id, user_id, warnings)
+              VALUES (?, ?, 1)
+              ON CONFLICT(channel_id, user_id) DO UPDATE SET warnings = warnings + 1
             `).bind(channelId, targetUserId).run();
           } catch (e) {}
           
@@ -445,9 +512,10 @@ export class ChatRoom {
           
           try {
             await this.env.DB.prepare(`
-              UPDATE channel_members SET role = ? 
-              WHERE channel_id = ? AND user_id = ?
-            `).bind(data.role, channelId, targetUserId).run();
+              INSERT INTO channel_members (channel_id, user_id, role)
+              VALUES (?, ?, ?)
+              ON CONFLICT(channel_id, user_id) DO UPDATE SET role = ?
+            `).bind(channelId, targetUserId, data.role, data.role).run();
           } catch (e) {}
           
           const targetRoleSession = this.sessions.get(targetVisitorId);
@@ -575,6 +643,12 @@ export default {
       } else if (request.method === 'PUT') {
         return handleProfileUpdate(request, env, corsHeaders);
       }
+    }
+    
+    // ✅ 사용자 정보 조회 API 추가
+    if (url.pathname.match(/^\/api\/users\/(.+)$/)) {
+      const discordId = url.pathname.match(/^\/api\/users\/(.+)$/)[1];
+      return handleUserGet(request, env, corsHeaders, discordId);
     }
     
     // 길드
@@ -708,6 +782,32 @@ async function handleAuthCheck(request, env, corsHeaders) {
   });
 }
 
+// ✅ 사용자 정보 조회
+async function handleUserGet(request, env, corsHeaders, discordId) {
+  try {
+    const user = await env.DB.prepare(`
+      SELECT u.*, g.short_name as guild_short_name, g.short_name_color as guild_color
+      FROM users u
+      LEFT JOIN guilds g ON u.guild_id = g.id
+      WHERE u.discord_id = ?
+    `).bind(discordId).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'User not found' }), {
+        status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    return new Response(JSON.stringify(user), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
 async function handleProfileCreate(request, env, corsHeaders) {
   const data = await request.json();
   
@@ -715,8 +815,11 @@ async function handleProfileCreate(request, env, corsHeaders) {
     INSERT INTO users (discord_id, discord_username, custom_nickname, avatar, email, guild_id)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(discord_id) DO UPDATE SET
+      discord_username = excluded.discord_username,
       custom_nickname = excluded.custom_nickname,
-      guild_id = excluded.guild_id,
+      avatar = excluded.avatar,
+      email = excluded.email,
+      guild_id = COALESCE(excluded.guild_id, users.guild_id),
       updated_at = CURRENT_TIMESTAMP
   `).bind(data.discordId, data.discordUsername, data.customNickname, data.avatar, data.email, data.guildId || null).run();
   

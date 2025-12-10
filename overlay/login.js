@@ -224,7 +224,7 @@ function showProfileSettings(discordUser) {
   console.log('💾 임시 사용자 데이터:', window.tempUserData);
 }
 
-// ✅ 프로필 완료 (개선된 버전)
+// ✅ 프로필 완료 - 서버 DB에 저장 필수
 async function submitProfile() {
   const nickname = document.getElementById('nicknameInput').value.trim();
   
@@ -240,13 +240,17 @@ async function submitProfile() {
   }
   
   const userData = {
-    ...window.tempUserData,
-    customNickname: nickname
+    discordId: window.tempUserData.discordId,
+    discordUsername: window.tempUserData.discordUsername,
+    customNickname: nickname,
+    avatar: window.tempUserData.avatar,
+    email: window.tempUserData.email
   };
   
   console.log('📤 프로필 저장 시도:', userData);
   
   try {
+    // ✅ 서버에 저장 (필수 - 채팅에서 조회하기 위함)
     const response = await fetch(`${API_BASE}/users/profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -259,26 +263,20 @@ async function submitProfile() {
       const result = await response.json();
       console.log('✅ 프로필 저장 성공:', result);
       
-      localStorage.setItem('userData', JSON.stringify(result.user || userData));
+      // 로컬에도 저장
+      localStorage.setItem('userData', JSON.stringify(userData));
       localStorage.setItem('authToken', result.token);
       
       console.log('🔄 index.html로 이동');
       isRedirecting = true;
       window.location.href = 'index.html';
     } else {
-      console.log('❌ 프로필 저장 실패, 로컬에만 저장');
-      // 폴백: 로컬에만 저장
-      localStorage.setItem('userData', JSON.stringify(userData));
-      isRedirecting = true;
-      window.location.href = 'index.html';
+      const errorText = await response.text();
+      console.error('❌ 서버 저장 실패:', errorText);
+      alert('서버에 프로필을 저장하지 못했습니다. 다시 시도해주세요.');
     }
   } catch (error) {
     console.error('❌ 프로필 저장 오류:', error);
-    
-    // 폴백: 로컬에만 저장
-    console.log('📱 오프라인 모드: 로컬에만 저장');
-    localStorage.setItem('userData', JSON.stringify(userData));
-    isRedirecting = true;
-    window.location.href = 'index.html';
+    alert('서버 연결에 실패했습니다. 네트워크 연결을 확인해주세요.');
   }
 }

@@ -7,7 +7,7 @@ const SUPER_ADMIN_ID = '257097077782216704';
 // 채널 데이터
 let channels = [];
 let activeChannelId = null;
-let currentUser = null;
+let currentUser = null;  // ✅ 서버에서 받은 정보로 업데이트됨
 let pendingChannel = null;
 
 // ✅ 채널별 WebSocket 관리
@@ -26,27 +26,21 @@ document.addEventListener('DOMContentLoaded', () => {
   ipcRenderer.on('load-channel', (event, channelData) => {
     console.log('📦 채널 데이터 수신:', channelData);
     
-    // ✅ 사용자 정보는 IPC에서 받은 것만 사용 (localStorage 무시)
-    if (channelData.user) {
+    // ✅ Discord ID만 저장 (나머지는 서버에서 받음)
+    if (channelData.discordId) {
       currentUser = {
-        discordId: channelData.user.discordId,
-        customNickname: channelData.user.nickname,
-        nickname: channelData.user.nickname,
-        avatar: channelData.user.avatar,
-        guild: channelData.user.guild,
-        guildColor: channelData.user.guildColor,
-        isSuperAdmin: channelData.user.isSuperAdmin
+        discordId: channelData.discordId
       };
-      console.log('👤 현재 사용자:', currentUser);
+      console.log('👤 Discord ID:', currentUser.discordId);
     }
     
     addChannel(channelData);
   });
 });
 
-// ✅ 권한 확인 함수들
+// ✅ 권한 확인 함수들 - 서버에서 받은 정보 기반
 function isSuperAdmin() {
-  return currentUser && currentUser.discordId === SUPER_ADMIN_ID;
+  return currentUser && currentUser.isSuperAdmin === true;
 }
 
 function isChannelOwner(channelId) {
@@ -55,11 +49,11 @@ function isChannelOwner(channelId) {
 }
 
 function isChannelAdmin(channelId) {
-  return isSuperAdmin() || isChannelOwner(channelId);
+  return isSuperAdmin() || isChannelOwner(channelId) || (currentUser && currentUser.role === 'owner');
 }
 
 function isChannelModerator(channelId) {
-  return false;
+  return currentUser && currentUser.role === 'moderator';
 }
 
 function canManageMembers(channelId) {
@@ -130,7 +124,7 @@ function toggleMembersSidebar() {
   }
 }
 
-// ✅ 참여자 목록 업데이트
+// ✅ 참여자 목록 업데이트 - isSuperAdmin 플래그 사용
 function updateMembersList(channelId) {
   const membersList = document.getElementById('membersList');
   const membersCount = document.getElementById('membersCount');
@@ -143,9 +137,9 @@ function updateMembersList(channelId) {
     const item = document.createElement('div');
     item.className = 'member-item';
     
-    // 역할 뱃지
+    // ✅ 역할 뱃지 - 서버에서 받은 isSuperAdmin 플래그 사용
     let roleBadge = '';
-    if (member.discordId === SUPER_ADMIN_ID) {
+    if (member.isSuperAdmin === true) {
       roleBadge = '<span class="role-badge super">👑</span>';
     } else if (member.role === 'owner') {
       roleBadge = '<span class="role-badge owner">⭐</span>';
@@ -179,15 +173,15 @@ function openAdminModal(member) {
   document.getElementById('adminTargetInfo').innerHTML = `
     <div class="target-avatar">👤</div>
     <div class="target-name" style="color: ${member.nicknameColor || '#ffffff'};">
-      ${member.guild ? `<span style="color: ${member.guildColor || '#667eea'};">[${member.guild}]</span> ` : ''}
+      ${member.guild && member.guild !== '없음' ? `<span style="color: ${member.guildColor || '#667eea'};">[${member.guild}]</span> ` : ''}
       ${member.nickname}
     </div>
     <div class="target-id">${member.discordId}</div>
   `;
   
-  // 총 관리자만 부관리자 지정 가능
+  // 총 관리자/채널주인만 부관리자 지정 가능
   const modBtn = document.getElementById('actionModerator');
-  modBtn.style.display = isChannelOwner(activeChannelId) || isSuperAdmin() ? 'block' : 'none';
+  modBtn.style.display = (isChannelOwner(activeChannelId) || isSuperAdmin()) ? 'block' : 'none';
   modBtn.textContent = member.role === 'moderator' ? '🛡️ 부관리자 해제' : '🛡️ 부관리자 지정';
   
   // 뮤트 해제 버튼
@@ -229,16 +223,8 @@ function applyNicknameColor() {
     }));
   }
   
-  // 로컬 업데이트
-  const members = channelMembers.get(activeChannelId) || [];
-  const member = members.find(m => m.discordId === targetUser.discordId);
-  if (member) member.nicknameColor = color;
-  
-  updateMembersList(activeChannelId);
   closeColorModal();
   closeAdminModal();
-  
-  addSystemMessage(activeChannelId, `${targetUser.nickname}님의 닉네임 색상이 변경되었습니다.`);
 }
 
 // ✅ 경고
@@ -256,8 +242,7 @@ function warnUser() {
       action: 'warn',
       channelId: activeChannelId,
       targetUserId: targetUser.discordId,
-      reason: reason,
-      adminId: currentUser.discordId
+      reason: reason
     }));
   }
   
@@ -495,27 +480,17 @@ function removeChannel(channelId) {
   }
 }
 
-// ✅ 아바타 URL 가져오기
-function getAvatarUrl() {
-  if (!currentUser || !currentUser.avatar) {
-    const odiscordId = currentUser ? currentUser.discordId : '0';
-    return `https://cdn.discordapp.com/embed/avatars/${parseInt(discordId) % 5}.png`;
-  }
-  
-  const extension = currentUser.avatar.startsWith('a_') ? 'gif' : 'png';
-  return `https://cdn.discordapp.com/avatars/${currentUser.discordId}/${currentUser.avatar}.${extension}?size=128`;
-}
-
-// WebSocket 연결 (채널별)
+// ✅ WebSocket 연결 (채널별) - Discord ID만 전송
 function connectToChannel(channelData) {
-  // ✅ 이미 해당 채널에 연결되어 있으면 스킵
+  // 이미 해당 채널에 연결되어 있으면 스킵
   if (channelWebSockets.has(channelData.id)) {
     console.log('⏭️ 이미 연결된 채널:', channelData.id);
     return;
   }
   
-  if (!currentUser) {
-    console.error('❌ 사용자 정보 없음');
+  if (!currentUser || !currentUser.discordId) {
+    console.error('❌ Discord ID 없음');
+    addSystemMessage(channelData.id, '⚠️ 로그인 정보가 없습니다. 다시 로그인해주세요.');
     return;
   }
   
@@ -529,27 +504,18 @@ function connectToChannel(channelData) {
     ws.onopen = () => {
       console.log('✅ WebSocket 연결 성공:', channelData.id);
       
-      // ✅ 채널 ID를 WebSocket에 저장
       ws.channelId = channelData.id;
       channelWebSockets.set(channelData.id, ws);
       
-      // ✅ 인증 및 입장 - 현재 사용자 정보 사용
+      // ✅ Discord ID만 전송 - 서버에서 나머지 정보 조회
       const joinData = {
         type: 'join',
         channelId: channelData.id,
-        user: {
-          discordId: currentUser.discordId,
-          nickname: currentUser.customNickname || currentUser.nickname,
-          avatar: currentUser.avatar,
-          guild: currentUser.guild || '없음',
-          guildColor: currentUser.guildColor || '#667eea'
-        }
+        discordId: currentUser.discordId
       };
       
       console.log('📤 Join 데이터 전송:', joinData);
       ws.send(JSON.stringify(joinData));
-      
-      addSystemMessage(channelData.id, `${channelData.name}에 입장하셨습니다.`);
       
       // ✅ Ping 간격 설정 (30초)
       ws.pingInterval = setInterval(() => {
@@ -570,7 +536,7 @@ function connectToChannel(channelData) {
     
     ws.onerror = (error) => {
       console.error('❌ WebSocket 오류:', error);
-      addSystemMessage(channelData.id, '⚠️ 서버 연결 실패. 로컬 모드로 작동합니다.');
+      addSystemMessage(channelData.id, '⚠️ 서버 연결 실패. 잠시 후 다시 시도해주세요.');
     };
     
     ws.onclose = () => {
@@ -581,7 +547,7 @@ function connectToChannel(channelData) {
     
   } catch (error) {
     console.error('❌ WebSocket 연결 실패:', error);
-    addSystemMessage(channelData.id, `${channelData.name}에 입장하셨습니다. (오프라인 모드)`);
+    addSystemMessage(channelData.id, '⚠️ 서버 연결에 실패했습니다.');
   }
 }
 
@@ -590,6 +556,18 @@ function handleWebSocketMessage(channelId, data) {
   console.log('📩 메시지 수신:', data.type, data);
   
   switch (data.type) {
+    case 'joined':
+      // ✅ 서버에서 받은 본인 정보로 currentUser 업데이트
+      if (data.user) {
+        currentUser = {
+          ...currentUser,
+          ...data.user
+        };
+        console.log('👤 사용자 정보 업데이트:', currentUser);
+      }
+      addSystemMessage(channelId, `${channels.find(c => c.id === channelId)?.name || '채널'}에 입장하셨습니다.`);
+      break;
+      
     case 'message':
       addMessage(channelId, data);
       break;
@@ -630,6 +608,7 @@ function handleWebSocketMessage(channelId, data) {
       const colorMember = colorMembers.find(m => m.discordId === data.targetUserId);
       if (colorMember) colorMember.nicknameColor = data.color;
       updateMembersList(channelId);
+      addSystemMessage(channelId, '닉네임 색상이 변경되었습니다.');
       break;
       
     case 'kicked':
@@ -643,11 +622,20 @@ function handleWebSocketMessage(channelId, data) {
       if (data.targetUserId === currentUser.discordId) {
         alert('채널에서 입장금지되었습니다.');
         removeChannel(channelId);
+      } else if (data.message) {
+        // 입장 시 밴된 경우
+        alert(data.message);
+        removeChannel(channelId);
       }
       break;
       
     case 'warning':
       addSystemMessage(channelId, data.message);
+      break;
+      
+    case 'error':
+      console.error('서버 에러:', data.message);
+      addSystemMessage(channelId, `⚠️ ${data.message}`);
       break;
       
     case 'pong':
@@ -661,6 +649,7 @@ function handleWebSocketMessage(channelId, data) {
           addMessage(channelId, {
             author: msg.custom_nickname || msg.user_id,
             authorId: msg.user_id,
+            avatar: msg.avatarUrl,
             content: msg.content,
             timestamp: msg.created_at,
             guild: msg.short_name,
@@ -737,34 +726,30 @@ function addMessage(channelId, messageData, isHistory = false) {
   }
 }
 
-// ✅ 메시지 전송
+// ✅ 메시지 전송 - content만 전송 (나머지는 서버 세션에서)
 function sendMessage(channelId, content) {
-  if (!currentUser) {
+  if (!currentUser || !currentUser.discordId) {
     console.error('❌ 사용자 정보 없음');
+    addSystemMessage(channelId, '⚠️ 로그인 정보가 없습니다.');
     return;
   }
   
   const ws = channelWebSockets.get(channelId);
   
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.error('❌ WebSocket 연결 안됨');
+    addSystemMessage(channelId, '⚠️ 서버와 연결되지 않았습니다.');
+    return;
+  }
+  
+  // ✅ content만 전송 - 서버 세션에 저장된 정보 사용
   const messageData = {
     type: 'message',
-    author: currentUser.customNickname || currentUser.nickname,
-    authorId: currentUser.discordId,
-    avatar: getAvatarUrl(),
-    guild: currentUser.guild || '없음',
-    guildColor: currentUser.guildColor || '#667eea',
-    content: content,
-    timestamp: new Date().toISOString()
+    content: content
   };
   
-  console.log('📤 메시지 전송:', messageData);
-  
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(messageData));
-  } else {
-    // ✅ 오프라인일 때만 로컬에 표시
-    addMessage(channelId, messageData);
-  }
+  console.log('📤 메시지 전송:', content);
+  ws.send(JSON.stringify(messageData));
 }
 
 // 인원수 업데이트
@@ -783,20 +768,24 @@ function updateMemberCount(channelId, count) {
   ipcRenderer.send('update-channel-member-count', { channelId, count });
 }
 
-// 비밀번호 모달
+// ✅ 비밀번호 모달 - 개선된 처리
 function showPasswordModal() {
   document.getElementById('passwordModal').classList.add('active');
+  document.getElementById('passwordInput').value = '';
   document.getElementById('passwordInput').focus();
 }
 
 function hidePasswordModal() {
   document.getElementById('passwordModal').classList.remove('active');
   document.getElementById('passwordInput').value = '';
+  pendingChannel = null;  // ✅ 취소 시 초기화
 }
 
 async function handlePasswordConfirm() {
   const password = document.getElementById('passwordInput').value;
-  if (!password || !pendingChannel) return;
+  if (!password || !pendingChannel) {
+    return;
+  }
   
   try {
     const response = await fetch(`${API_BASE}/channels/verify-password`, {
@@ -808,16 +797,19 @@ async function handlePasswordConfirm() {
     const result = await response.json();
     
     if (result.success) {
-      hidePasswordModal();
-      addChannel(pendingChannel);
-      pendingChannel = null;
+      const channelToAdd = pendingChannel;
+      hidePasswordModal();  // ✅ 성공 시 모달 닫기 + pendingChannel 초기화
+      addChannel(channelToAdd);
     } else {
+      // ✅ 실패 시 - 모달 유지, 입력만 초기화
       alert(result.error || '비밀번호가 틀렸습니다.');
       document.getElementById('passwordInput').value = '';
       document.getElementById('passwordInput').focus();
     }
   } catch (error) {
     alert('비밀번호 검증에 실패했습니다.');
+    document.getElementById('passwordInput').value = '';
+    document.getElementById('passwordInput').focus();
   }
 }
 
